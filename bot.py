@@ -11,11 +11,18 @@ if not TOKEN:
 
 # --- FIREBASE ---
 # W Railway Variables dodaj FIREBASE_JSON = cała zawartość pliku serviceAccountKey.json z Firebase
-fb_json_str = os.getenv("FIREBASE_JSON","")
-if not fb_json_str:
-    print("ERROR: Brak FIREBASE_JSON w Variables!")
-    while True: time.sleep(60)
-
+fb_json_str = os.getenv("FIREBASE_JSON","").strip()
+# usuń ewentualne cudzysłowy na początku/końcu które dodaje Railway
+if fb_json_str.startswith("'") and fb_json_str.endswith("'"):
+    fb_json_str = fb_json_str[1:-1]
+if fb_json_str.startswith('"') and fb_json_str.endswith('"'):
+    # jeśli całość jest w cudzysłowie, spróbuj 2x parsować
+    try:
+        inner = json.loads(fb_json_str)
+        if isinstance(inner, str):
+            fb_json_str = inner
+    except:
+        pass
 cred_dict = json.loads(fb_json_str)
 cred = credentials.Certificate(cred_dict)
 if not firebase_admin._apps:
