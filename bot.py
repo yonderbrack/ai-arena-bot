@@ -14,25 +14,36 @@ if not fb_json_str:
     print("ERROR: Brak FIREBASE_JSON!")
     while True: time.sleep(60)
 
-if fb_json_str.startswith("'") and fb_json_str.endswith("'"):
+# Usuń zewnętrzne cudzysłowy
+if (fb_json_str.startswith("'") and fb_json_str.endswith("'")) or (fb_json_str.startswith('"') and fb_json_str.endswith('"')):
     fb_json_str = fb_json_str[1:-1]
-if fb_json_str.startswith('"') and fb_json_str.endswith('"'):
-    try:
-        inner = json.loads(fb_json_str)
-        if isinstance(inner, str):
-            fb_json_str = inner
-    except:
-        pass
 
+# Naprawa: weź tylko PIERWSZY obiekt JSON, ignoruj resztę (Extra data fix)
 try:
-    s = fb_json_str.find('{')
-    e = fb_json_str.rfind('}')
-    if s != -1 and e != -1:
-        fb_json_str = fb_json_str[s:e+1]
-    cred_dict = json.loads(fb_json_str)
-except Exception as ex:
-    print(f"FIREBASE JSON ERROR: {ex}")
-    while True: time.sleep(60)
+    fb_json_str = fb_json_str.strip()
+    decoder = json.JSONDecoder()
+    cred_dict, _ = decoder.raw_decode(fb_json_str)
+except Exception:
+    # fallback - wytnij od pierwszego { do pierwszego zamykającego pasującego
+    try:
+        start = fb_json_str.find('{')
+        # znajdź gdzie kończy się pierwszy obiekt licząc klamry
+        depth = 0
+        end = -1
+        for i in range(start, len(fb_json_str)):
+            if fb_json_str[i] == '{': depth += 1
+            elif fb_json_str[i] == '}': depth -= 1
+            if depth == 0 and start!= -1:
+                end = i
+                break
+        if start!= -1 and end!= -1:
+            cred_dict = json.loads(fb_json_str[start:end+1])
+        else:
+            raise ValueError("Nie znaleziono JSON")
+    except Exception as ex:
+        print(f"FIREBASE JSON ERROR: {ex}")
+        print(f"Pierwsze 500: {fb_json_str[:500]}")
+        while True: time.sleep(60)
 
 cred = credentials.Certificate(cred_dict)
 if not firebase_admin._apps:
@@ -51,16 +62,12 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.author.bot:
-        return
-    if message.channel.id != CHANNEL_ID:
-        return
-    if not message.content.strip():
-        return
+    if message.author.bot: return
+    if message.channel.id!= CHANNEL_ID: return
+    if not message.content.strip(): return
     try:
         content = message.content.strip()
-        doc_ref = db.collection("lista").document(str(message.id))
-        doc_ref.set({
+        db.collection("lista").document(str(message.id)).set({
             "content": content,
             "author": str(message.author),
             "author_id": str(message.author.id),
