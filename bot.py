@@ -2,57 +2,60 @@ import os
 import json
 import base64
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import firebase_admin
-from firebase_admin import credentials
+from firebase_admin import credentials, firestore
 
-# --- FIREBASE ---
+# --- FIREBASE - TWOJ KOD ZOSTAJE ---
 firebase_creds_b64 = os.getenv("FIREBASE_B64")
 firebase_creds_json = os.getenv("FIREBASE_JSON")
 cred = None
-
 if firebase_creds_b64:
-    try:
-        decoded = base64.b64decode(firebase_creds_b64).decode('utf-8')
-        cred_dict = json.loads(decoded)
-        cred = credentials.Certificate(cred_dict)
-        print("Firebase zaladowany z FIREBASE_B64")
-    except Exception as e:
-        print(f"Blad FIREBASE_B64: {e}")
+    decoded = base64.b64decode(firebase_creds_b64).decode('utf-8')
+    cred_dict = json.loads(decoded)
+    cred = credentials.Certificate(cred_dict)
 elif firebase_creds_json:
-    try:
-        cred_dict = json.loads(firebase_creds_json)
-        cred = credentials.Certificate(cred_dict)
-        print("Firebase zaladowany z FIREBASE_JSON")
-    except Exception as e:
-        print(f"Blad FIREBASE_JSON: {e}")
-
-if not cred and os.path.exists("serviceAccount.json"):
+    cred_dict = json.loads(firebase_creds_json)
+    cred = credentials.Certificate(cred_dict)
+elif os.path.exists("serviceAccount.json"):
     cred = credentials.Certificate("serviceAccount.json")
-    print("Firebase zaladowany z pliku")
 
-if cred:
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-else:
-    print("BRAK CREDENTIALS FIREBASE!")
+if cred and not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
 
-# --- DISCORD BOT ---
+db = firestore.client()  # TO BYLO BRAKUJACE
+
+# --- DISCORD ---
 intents = discord.Intents.default()
 intents.message_content = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+CHANNEL_ID = int(os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID") or 0)
+
+@tasks.loop(minutes=5)
+async def check_lista():
+    if CHANNEL_ID == 0: return
+    try:
+        channel = bot.get_channel(CHANNEL_ID) or await bot.fetch_channel(CHANNEL_ID)
+        async for msg in channel.history(limit=20):
+            lines = [l.strip() for l in msg.content.split("\n") if l.strip() and "-" in l]
+            if len(lines) >= 10:
+                db.collection("lista").document("aktualna").set({
+                    "utwory": lines,
+                    "count": len(lines)
+                })
+                print(f"Zapisano {len(lines)} do lista")
+                return
+    except Exception as e:
+        print(f"check_lista blad: {e}")
 
 @bot.event
 async def on_ready():
     print(f"Zalogowano jako {bot.user}")
+    check_lista.start()
 
 @bot.command()
 async def ping(ctx):
     await ctx.send("Dziala!")
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    print("BRAK DISCORD_TOKEN!")
-else:
-    bot.run(TOKEN)
+bot.run(os.getenv("DISCORD_TOKEN"))
