@@ -1,1 +1,1 @@
-worker: python bot.py & python youtube_live_bot.py
+worker: python -u bot.py & python -u youtube_live_bot.py & wait
