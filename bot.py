@@ -1,16 +1,28 @@
-
-import discord, re, json, os
+import discord, re, json, os, time
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 TOKEN = os.getenv("DISCORD_TOKEN","")
 CHANNEL_ID = 1537019562625597440
-OUTPUT = "piosenki.json"
 
 if not TOKEN:
-    print("ERROR: Brak DISCORD_TOKEN w Variables! Dodaj go w Railway.")
-    # nie crashujemy builda, tylko czekamy
-    import time
-    while True:
-        time.sleep(60)
+    print("ERROR: Brak DISCORD_TOKEN w Variables!")
+    while True: time.sleep(60)
+
+# --- FIREBASE ---
+# W Railway Variables dodaj FIREBASE_JSON = cała zawartość pliku serviceAccountKey.json z Firebase
+fb_json_str = os.getenv("FIREBASE_JSON","")
+if not fb_json_str:
+    print("ERROR: Brak FIREBASE_JSON w Variables!")
+    while True: time.sleep(60)
+
+cred_dict = json.loads(fb_json_str)
+cred = credentials.Certificate(cred_dict)
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+print("FIREBASE OK -> kolekcja lista")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -40,12 +52,27 @@ async def sync_channel(channel):
     for s in all_songs:
         uniq[s["numer"]]=s
     final=sorted(uniq.values(), key=lambda x:x["numer"])
+    
     if final:
-        with open(OUTPUT,"w",encoding="utf-8") as f:
-            json.dump(final,f,ensure_ascii=False,indent=2)
-        print(f"NADPISANO {len(final)} utworow")
+        batch = db.batch()
+        for s in final:
+            doc_ref = db.collection("lista").document(str(s["numer"]))
+            batch.set(doc_ref, {
+                "numer": s["numer"],
+                "wykonawca": s["wykonawca"],
+                "tytul": s["tytul"],
+                "link": s["link"],
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+        batch.commit()
+        print(f"ZAPISANO DO FIREBASE lista: {len(final)} utworow")
         for s in final:
             print(f"{s['numer']}. {s['wykonawca']} - {s['tytul']}")
+    
+    # nadal zapis lokalny dla backupu
+    with open("piosenki.json","w",encoding="utf-8") as f:
+        json.dump(final,f,ensure_ascii=False,indent=2)
+        
     return final
 
 @client.event
