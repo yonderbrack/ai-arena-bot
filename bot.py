@@ -1,82 +1,58 @@
-import discord, json, os, time
+import os
+import json
+import base64
+import discord
+from discord.ext import commands
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials
 
-TOKEN = os.getenv("DISCORD_TOKEN","")
-CHANNEL_ID = 1537019562625597440
+# --- FIREBASE ---
+firebase_creds_b64 = os.getenv("FIREBASE_B64")
+firebase_creds_json = os.getenv("FIREBASE_JSON")
+cred = None
 
-if not TOKEN:
-    print("ERROR: Brak DISCORD_TOKEN!")
-    while True: time.sleep(60)
-
-fb_json_str = os.getenv("FIREBASE_JSON","").strip()
-if not fb_json_str:
-    print("ERROR: Brak FIREBASE_JSON!")
-    while True: time.sleep(60)
-
-# Usuń zewnętrzne cudzysłowy
-if (fb_json_str.startswith("'") and fb_json_str.endswith("'")) or (fb_json_str.startswith('"') and fb_json_str.endswith('"')):
-    fb_json_str = fb_json_str[1:-1]
-
-# Naprawa: weź tylko PIERWSZY obiekt JSON, ignoruj resztę (Extra data fix)
-try:
-    fb_json_str = fb_json_str.strip()
-    decoder = json.JSONDecoder()
-    cred_dict, _ = decoder.raw_decode(fb_json_str)
-except Exception:
-    # fallback - wytnij od pierwszego { do pierwszego zamykającego pasującego
+if firebase_creds_b64:
     try:
-        start = fb_json_str.find('{')
-        # znajdź gdzie kończy się pierwszy obiekt licząc klamry
-        depth = 0
-        end = -1
-        for i in range(start, len(fb_json_str)):
-            if fb_json_str[i] == '{': depth += 1
-            elif fb_json_str[i] == '}': depth -= 1
-            if depth == 0 and start!= -1:
-                end = i
-                break
-        if start!= -1 and end!= -1:
-            cred_dict = json.loads(fb_json_str[start:end+1])
-        else:
-            raise ValueError("Nie znaleziono JSON")
-    except Exception as ex:
-        print(f"FIREBASE JSON ERROR: {ex}")
-        print(f"Pierwsze 500: {fb_json_str[:500]}")
-        while True: time.sleep(60)
+        decoded = base64.b64decode(firebase_creds_b64).decode('utf-8')
+        cred_dict = json.loads(decoded)
+        cred = credentials.Certificate(cred_dict)
+        print("Firebase zaladowany z FIREBASE_B64")
+    except Exception as e:
+        print(f"Blad FIREBASE_B64: {e}")
+elif firebase_creds_json:
+    try:
+        cred_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_dict)
+        print("Firebase zaladowany z FIREBASE_JSON")
+    except Exception as e:
+        print(f"Blad FIREBASE_JSON: {e}")
 
-cred = credentials.Certificate(cred_dict)
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
+if not cred and os.path.exists("serviceAccount.json"):
+    cred = credentials.Certificate("serviceAccount.json")
+    print("Firebase zaladowany z pliku")
 
-db = firestore.client()
-print("FIREBASE OK -> kolekcja lista")
+if cred:
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+else:
+    print("BRAK CREDENTIALS FIREBASE!")
 
+# --- DISCORD BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
 
-@client.event
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
 async def on_ready():
-    print(f"BOT ONLINE {client.user} -> kanal {CHANNEL_ID}")
+    print(f"Zalogowano jako {bot.user}")
 
-@client.event
-async def on_message(message):
-    if message.author.bot: return
-    if message.channel.id!= CHANNEL_ID: return
-    if not message.content.strip(): return
-    try:
-        content = message.content.strip()
-        db.collection("lista").document(str(message.id)).set({
-            "content": content,
-            "author": str(message.author),
-            "author_id": str(message.author.id),
-            "timestamp": message.created_at,
-            "channel_id": str(message.channel.id),
-            "message_id": str(message.id)
-        })
-        print(f"Zapisano: {content[:100]}")
-    except Exception as ex:
-        print(f"BLAD zapisu: {ex}")
+@bot.command()
+async def ping(ctx):
+    await ctx.send("Dziala!")
 
-client.run(TOKEN)
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    print("BRAK DISCORD_TOKEN!")
+else:
+    bot.run(TOKEN)
