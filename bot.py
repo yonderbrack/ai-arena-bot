@@ -20,26 +20,32 @@ async def check_lista():
         cid = int(os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID"))
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         all_lines = []
-        async for msg in ch.history(limit=100):
-            if not msg.content or "-" not in msg.content:
-                continue
-            lines = [l.strip() for l in msg.content.split("\n") if l.strip() and "-" in l]
-            all_lines.extend(lines)
+        async for msg in ch.history(limit=200):
+            if not msg.content: continue
+            # bierzemy kazda linie ktora zaczyna sie od cyfry
+            for raw in msg.content.split("\n"):
+                raw = raw.strip()
+                if not raw: continue
+                if re.match(r'^\d+[\.\)]?\s*', raw):
+                    all_lines.append(raw)
+
         uniq = {}
         for line in all_lines:
             m = re.match(r'^\s*(\d+)', line)
             if m:
                 uniq[int(m.group(1))] = line
+
         sorted_list = [uniq[k] for k in sorted(uniq.keys())]
-        if len(sorted_list) >= 5:
+
+        print(f"Znaleziono {len(all_lines)} linii, unikalnych {len(sorted_list)}: {sorted(uniq.keys())}")
+
+        if len(sorted_list) >= 1:
             db.collection("lista").document("aktualna").set({
                 "utwory": sorted_list,
                 "count": len(sorted_list),
                 "updated_at": firestore.SERVER_TIMESTAMP
             })
             print(f"ZAPISANO {len(sorted_list)} do lista/aktualna")
-        else:
-            print(f"Za malo znaleziono: {len(sorted_list)}")
     except Exception as e:
         print(f"ERROR: {e}")
 
