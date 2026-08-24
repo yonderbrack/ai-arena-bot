@@ -1,4 +1,6 @@
-discord.py==2.3.2
+discord.py
 firebase-admin
-youtube-transcript-api
 requests
+yt-dlp
+faster-whisper
+youtube-transcript-api==0.6.2
