@@ -1,4 +1,4 @@
-import os, re, time, json, base64, requests
+import os, re, time, json, base64, requests, tempfile, subprocess
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -14,66 +14,72 @@ YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "UCDgUD2W-MItyPy7QKRTSp_Q")
 def get_live_video_id(channel_id):
     try:
         r = requests.get(f"https://www.youtube.com/channel/{channel_id}/live", allow_redirects=True, timeout=10)
-        if 'isLive' in r.text or 'hqdefault_live' in r.text:
+        if 'hqdefault_live' in r.text or '"isLive":true' in r.text:
             m = re.search(r"watch\?v=([A-Za-z0-9_-]{11})", r.text)
             if m:
                 return m.group(1)
     except Exception as e:
-        print(f"get_live error: {e}")
-    print("brak LIVE (kanal nie nadaje)")
+        print(f"live check err: {e}")
     return None
 
-def fetch_transcript_new(vid):
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        api = YouTubeTranscriptApi()
-        fetched = api.fetch(vid, languages=['pl','pl-PL','en'])
-        return [x.text for x in fetched]
-    except Exception as e:
-        print(f"transcript err new API: {e}")
-        return []
+from faster_whisper import WhisperModel
+print("Ladowanie Whisper small PL...")
+model = WhisperModel("small", device="cpu", compute_type="int8")
+print("Whisper ready - slucha audio")
 
-def save_single(num, title):
-    title = title.strip()[:150]
-    if len(title) < 3: return
-    db.collection("config").document("top5").set({
-        f"miejsce{num}": title,
-        "updated_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    print(f"✅ ZAPISANO miejsce{num}: {title}")
+def transcribe_audio_file(wav_path):
+    try:
+        segments, info = model.transcribe(wav_path, language="pl", beam_size=1, vad_filter=True)
+        text = " ".join([s.text for s in segments])
+        return text.lower()
+    except Exception as e:
+        print(f"whisper err: {e}")
+        return ""
+
+def download_live_chunk(video_id, duration=15):
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        direct_url = subprocess.check_output(["yt-dlp", "-f", "bestaudio", "--no-playlist", "-g", url], text=True, timeout=15).strip().split('\n')[0]
+        tmp_wav = tempfile.mktemp(suffix=".wav")
+        subprocess.run(["ffmpeg", "-y", "-i", direct_url, "-t", str(duration), "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", tmp_wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        return tmp_wav
+    except Exception as e:
+        print(f"download chunk err: {e}")
+        return None
+
+PLACE_RE = re.compile(r'miejsce\s+([1-5])\s*(?:to|:|jest|-)?\s*([^\n]{3,120})', re.I)
 
 def main():
-    print("BOT LIVE START - v3 fixed API")
-    last_vid = None
-    seen = set()
+    print("BOT LIVE AUDIO START")
+    seen=set()
     while True:
-        try:
-            vid = get_live_video_id(YOUTUBE_CHANNEL_ID)
-            if not vid:
-                time.sleep(60)
+        vid = get_live_video_id(YOUTUBE_CHANNEL_ID)
+        if not vid:
+            print("brak LIVE - sleep 60s")
+            time.sleep(60)
+            continue
+        print(f"🔴 LIVE {vid} - nasluchuje")
+        while True:
+            if not get_live_video_id(YOUTUBE_CHANNEL_ID):
+                print("LIVE koniec")
+                break
+            wav = download_live_chunk(vid, 15)
+            if not wav:
+                time.sleep(5)
                 continue
-            if vid != last_vid:
-                print(f"🔴 LIVE {vid}")
-                last_vid = vid
-                seen.clear()
-
-            texts = fetch_transcript_new(vid)
-            if texts:
-                full = " ".join(texts[-150:]).lower()
-                print(f"chunk: ...{full[-250:]}")
-                for m in re.finditer(r'miejsce\s+([1-5])\s*(?:to|:|jest|-)?\s*([^\n\.]{3,100})', full):
-                    num = int(m.group(1))
-                    title = m.group(2).strip()
-                    key = f"{num}:{title.lower()}"
-                    if key not in seen:
-                        save_single(num, title)
-                        seen.add(key)
-            else:
-                print("pusty transcript - czekam")
-            time.sleep(25)
-        except Exception as e:
-            print(f"loop err: {e}")
-            time.sleep(30)
+            text = transcribe_audio_file(wav)
+            print(f"🎤 {text}")
+            for m in PLACE_RE.finditer(text):
+                num = int(m.group(1))
+                title = m.group(2).strip()
+                key = f"{num}:{title.lower()}"
+                if key not in seen and len(title)>3:
+                    db.collection("config").document("top5").set({f"miejsce{num}": title, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
+                    print(f"✅ ZAPISANO miejsce{num}: {title}")
+                    seen.add(key)
+            try: os.remove(wav)
+            except: pass
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
