@@ -1,7 +1,6 @@
 import os, re, time, json, base64, requests
 import firebase_admin
 from firebase_admin import credentials, firestore
-from youtube_transcript_api import YouTubeTranscriptApi
 
 b64 = os.getenv("FIREBASE_B64")
 cred_dict = json.loads(base64.b64decode(b64).decode('utf-8'))
@@ -15,41 +14,24 @@ YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "UCDgUD2W-MItyPy7QKRTSp_Q")
 def get_live_video_id(channel_id):
     try:
         r = requests.get(f"https://www.youtube.com/channel/{channel_id}/live", allow_redirects=True, timeout=10)
-        m = re.search(r"watch\?v=([A-Za-z0-9_-]{11})", r.text)
-        if m:
-            return m.group(1)
-        m2 = re.search(r"watch\?v=([A-Za-z0-9_-]+)", r.url)
-        if m2:
-            return m2.group(1)
+        if 'isLive' in r.text or 'hqdefault_live' in r.text:
+            m = re.search(r"watch\?v=([A-Za-z0-9_-]{11})", r.text)
+            if m:
+                return m.group(1)
     except Exception as e:
         print(f"get_live error: {e}")
+    print("brak LIVE (kanal nie nadaje)")
     return None
 
-SINGLE_RE = re.compile(r'miejsce\s+([1-5])\s*(?:to|:|jest|-)?\s*([^\n\.]{3,100})', re.I)
-
-def fetch_transcript(vid):
-    # obsluga starej i nowej wersji biblioteki
+def fetch_transcript_new(vid):
     try:
-        # nowa wersja >=1.0
+        from youtube_transcript_api import YouTubeTranscriptApi
         api = YouTubeTranscriptApi()
-        data = api.fetch(vid, languages=['pl','pl-PL'])
-        return [d.text for d in data]
-    except Exception:
-        try:
-            # stara wersja
-            return [t['text'] for t in YouTubeTranscriptApi.get_transcript(vid, languages=['pl'])]
-        except Exception as e:
-            # proba przez list_transcripts
-            try:
-                ytt = YouTubeTranscriptApi.list_transcripts(vid)
-                for tr in ytt:
-                    if 'pl' in tr.language_code:
-                        return [t['text'] for t in tr.fetch()]
-                # fallback pierwszy
-                return [t['text'] for t in next(iter(ytt)).fetch()]
-            except Exception as e2:
-                print(f"transcript err: {e} / {e2}")
-                return []
+        fetched = api.fetch(vid, languages=['pl','pl-PL','en'])
+        return [x.text for x in fetched]
+    except Exception as e:
+        print(f"transcript err new API: {e}")
+        return []
 
 def save_single(num, title):
     title = title.strip()[:150]
@@ -60,15 +42,14 @@ def save_single(num, title):
     }, merge=True)
     print(f"✅ ZAPISANO miejsce{num}: {title}")
 
-def main_loop():
-    print("BOT LIVE START - fixed API")
+def main():
+    print("BOT LIVE START - v3 fixed API")
     last_vid = None
     seen = set()
     while True:
         try:
             vid = get_live_video_id(YOUTUBE_CHANNEL_ID)
             if not vid:
-                print("brak LIVE")
                 time.sleep(60)
                 continue
             if vid != last_vid:
@@ -76,11 +57,11 @@ def main_loop():
                 last_vid = vid
                 seen.clear()
 
-            texts = fetch_transcript(vid)
+            texts = fetch_transcript_new(vid)
             if texts:
                 full = " ".join(texts[-150:]).lower()
                 print(f"chunk: ...{full[-250:]}")
-                for m in SINGLE_RE.finditer(full):
+                for m in re.finditer(r'miejsce\s+([1-5])\s*(?:to|:|jest|-)?\s*([^\n\.]{3,100})', full):
                     num = int(m.group(1))
                     title = m.group(2).strip()
                     key = f"{num}:{title.lower()}"
@@ -88,12 +69,11 @@ def main_loop():
                         save_single(num, title)
                         seen.add(key)
             else:
-                print("pusty transcript - live moze nie miec napisow PL")
-
+                print("pusty transcript - czekam")
             time.sleep(25)
         except Exception as e:
             print(f"loop err: {e}")
             time.sleep(30)
 
 if __name__ == "__main__":
-    main_loop()
+    main()
