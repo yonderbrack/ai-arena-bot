@@ -10,23 +10,23 @@ if not firebase_admin._apps:
 db=firestore.client()
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
-START_SEEK = 3000  # SZTYWNO
+START_SEEK = 3000
 
-print(f"BOT V5 FIX NOT FOUND - START {START_SEEK}s - SMALL")
+print(f"BOT V6 FINAL - START {START_SEEK}s - SMALL - FIX NOT FOUND")
 
 from faster_whisper import WhisperModel
-print("Ladowanie Whisper SMALL...")
+print("Ladowanie Whisper SMALL - 300MB...")
 model=WhisperModel("small",device="cpu",compute_type="int8")
-print("Whisper SMALL ready")
+print("Whisper SMALL ready - slucha audio")
 
-ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama","DodekLab","Carmenaigrami"]
+ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama"]
 
 def fix(t):
     return t.lower().replace("koda grace","Koda Grace").replace("zapach pomaranczy","Zapach Pomarańczy").replace("siudne","siódme").replace("indy","Andy").replace("tobicy","tablicy")
 
 def best_match(txt):
     for u in ZNANE:
-        if u.lower() in txt.lower() or txt.lower() in u.lower():
+        if u.lower() in txt.lower():
             return u
     best=None; sc=0
     for u in ZNANE:
@@ -55,15 +55,12 @@ def download_chunk(vid, seek, dur=30):
     tmp=tempfile.mktemp()+".wav"
     end=seek+dur
     try:
-        # 1. Pobierz audio URL
         cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio","--extractor-args","youtube:player_client=android","-g",url]
         r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
         out=r.stdout.decode().strip()
-        err=r.stderr.decode().strip()
         aurl=out.split("\n")[0].strip()
         if not aurl.startswith("http"):
-            print(f"NO URL seek {seek} err: {err[:300]} out: {out[:300]}")
-            # proba bez android client
+            print(f"NO URL seek {seek} - probuje bez android")
             cmd2=["yt-dlp","-f","bestaudio","-g",url]
             r2=subprocess.run(cmd2,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
             aurl=r2.stdout.decode().strip().split("\n")[0]
@@ -75,23 +72,13 @@ def download_chunk(vid, seek, dur=30):
                 print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg size {os.path.getsize(tmp)}")
                 return tmp, end
             else:
-                print(f"FFMPEG FAIL size 0 err: {res.stderr.decode()[:500]}")
+                print(f"FFMPEG FAIL seek {seek} err {res.stderr.decode()[:500]}")
         else:
-            print(f"NO AUDIO URL at all seek {seek}")
+            print(f"NO AUDIO URL at all seek {seek} out {out[:200]}")
     except Exception as e:
         print(f"dl err {seek}: {e}")
-    # fallback - sections
-    try:
-        base=tempfile.mktemp()
-        out2=base+".wav"
-        cmd=["yt-dlp","-f","bestaudio","--extractor-args","youtube:player_client=android","--download-sections",f"*{seek}-{end}","-x","--audio-format","wav","-o",out2,url]
-        subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=90)
-        if os.path.exists(out2):
-            print(f"DOWNLOADED chunk {seek}-{end} via sections FALLBACK")
-            return out2, end
-    except: pass
-    print(f"NOT FOUND chunk {seek}-{end}")
-    time.sleep(5)
+    print(f"NOT FOUND chunk {seek}-{end} - skip")
+    time.sleep(2)
     return None, end
 
 MAPA={"pierwsze":"1","drugie":"2","trzecie":"3","czwarte":"4","piąte":"5","piate":"5","pierwsza":"1","druga":"2","trzecia":"3","czwarta":"4","piąta":"5"}
@@ -100,9 +87,9 @@ def extract(text):
     res=[]
     for m in re.finditer(r'miejsc[aeu]|pozycj[ai]', text, re.I):
         win=text[max(0,m.start()-20):m.end()+40]
-        num_match=re.search(r'\b([1-5])\b', win)
-        if num_match:
-            res.append((num_match.group(1), text[m.end():m.end()+150]))
+        nm=re.search(r'\b([1-5])\b', win)
+        if nm:
+            res.append((nm.group(1), text[m.end():m.end()+150]))
             continue
         sm=re.search(r'(pierwsze|drugie|trzecie|czwarte|piąte|piate|pierwsza|druga|trzecia|czwarta|piąta)', win, re.I)
         if sm:
@@ -110,7 +97,6 @@ def extract(text):
             if n:
                 res.append((n, text[m.end():m.end()+150]))
     for m in re.finditer(r'numer\s*([1-5])', text, re.I):
-        # numer X miejsce w dowolnej kolejnosci
         if "miejsc" in text[max(0,m.start()-20):m.start()+30].lower():
             res.append((m.group(1), text[m.end():m.end()+150]))
     return res
@@ -126,12 +112,12 @@ def clean_title(t):
 def main():
     seek=START_SEEK
     seen=set()
-    print(f"BOT V5 - miejsce + numer DOWOLNIE + FIX NOT FOUND start {seek}")
+    print(f"BOT V6 - miejsce + numer DOWOLNIE + FIX NOT FOUND start {seek}")
     while True:
         wav, nxt = download_chunk(TEST_VIDEO_ID, seek, 30)
         seek=nxt
         if not wav:
-            time.sleep(3)
+            time.sleep(2)
             continue
         txt=transcribe(wav)
         if txt:
@@ -157,4 +143,3 @@ def main():
 
 if __name__=="__main__":
     main()
-
