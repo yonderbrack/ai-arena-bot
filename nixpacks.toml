@@ -1,2 +1,9 @@
 [phases.setup]
+nixPkgs = ["python311", "ffmpeg", "nodejs_18", "deno"]
 aptPkgs = ["ffmpeg"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python -u youtube_live_bot.py"
