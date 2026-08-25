@@ -22,7 +22,7 @@ def get_live_video_id(channel_id):
 
 from faster_whisper import WhisperModel
 print("Ladowanie Whisper small PL...")
-model=WhisperModel("small",device="cpu",compute_type="int8")
+model=WhisperModel("tiny",device="cpu",compute_type="int8")
 print("Whisper ready - slucha audio")
 
 def transcribe_audio_file(wav_path):
