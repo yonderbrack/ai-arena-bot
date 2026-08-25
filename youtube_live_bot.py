@@ -1,4 +1,4 @@
-import os, re, time, json, base64, tempfile, subprocess, glob, difflib
+import os, re, time, json, base64, tempfile, subprocess, difflib
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -10,13 +10,15 @@ if not firebase_admin._apps:
 db=firestore.client()
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
+LIVE_MODE=os.getenv("LIVE_MODE","false").lower()=="true"
+
 START_SEEK = 3000
-print(f"BOT V7 FINAL SMALL - START {START_SEEK}s - FIX NOT FOUND - MIEJSCE+NUMER DOWOLNIE")
+print(f"BOT V8 LIVE FIX - START {START_SEEK}s - SMALL WEB - NO LOOP")
 
 from faster_whisper import WhisperModel
 print("Ladowanie Whisper SMALL - 300MB...")
 model=WhisperModel("small",device="cpu",compute_type="int8")
-print("Whisper SMALL ready - slucha audio")
+print("Whisper SMALL ready")
 
 ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama","DodekLab","Carmenaigrami"]
 
@@ -49,36 +51,62 @@ def transcribe(wav):
         print(f"whisper err {e}")
         return ""
 
-def download_chunk(vid, seek, dur=30):
+def get_audio_url(vid):
     url=f"https://www.youtube.com/watch?v={vid}"
+    # V8: web client first, no SABR warning
+    for client in ["web","default"]:
+        try:
+            if client=="web":
+                cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio","--extractor-args","youtube:player_client=web","-g",url]
+            else:
+                cmd=["yt-dlp","-f","bestaudio","-g",url]
+            r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+            aurl=r.stdout.decode().strip().split("\n")[0]
+            if aurl.startswith("http"):
+                return aurl
+        except: pass
+    return None
+
+def load_last_seek():
+    try:
+        doc=db.collection("config").document("bot_state").get()
+        if doc.exists:
+            data=doc.to_dict()
+            return int(data.get("last_seek", START_SEEK))
+    except: pass
+    return START_SEEK
+
+def save_last_seek(seek):
+    try:
+        db.collection("config").document("bot_state").set({"last_seek":seek,"updated_at":firestore.SERVER_TIMESTAMP},merge=True)
+    except: pass
+
+def download_chunk(vid, seek, dur=30):
     tmp=tempfile.mktemp()+".wav"
     end=seek+dur
     try:
-        cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio","--extractor-args","youtube:player_client=android","-g",url]
-        r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
-        out=r.stdout.decode().strip()
-        err=r.stderr.decode().strip()
-        aurl=out.split("\n")[0].strip()
-        if not aurl.startswith("http"):
-            print(f"NO URL seek {seek} err {err[:200]} - proba bez android")
-            cmd2=["yt-dlp","-f","bestaudio","-g",url]
-            r2=subprocess.run(cmd2,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
-            aurl=r2.stdout.decode().strip().split("\n")[0]
-        if aurl.startswith("http"):
-            print(f"AUDIO URL OK seek {seek}")
-            cmd_ff=["ffmpeg","-y","-ss",str(seek),"-i",aurl,"-t",str(dur),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","error",tmp]
-            res=subprocess.run(cmd_ff,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=70)
-            if os.path.exists(tmp) and os.path.getsize(tmp)>3000:
-                print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg size {os.path.getsize(tmp)}")
-                return tmp, end
-            else:
-                print(f"FFMPEG FAIL seek {seek} err {res.stderr.decode()[:500]}")
+        aurl=get_audio_url(vid)
+        if not aurl:
+            print(f"NO AUDIO URL seek {seek}")
+            print(f"NOT FOUND chunk {seek}-{end}")
+            return None, end
+        print(f"AUDIO URL OK seek {seek} client=web")
+        if LIVE_MODE:
+            # LIVE: pobierz ostatnie dur sekund z live edge, bez -ss
+            cmd_ff=["ffmpeg","-y","-i",aurl,"-t",str(dur),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","error",tmp]
         else:
-            print(f"NO AUDIO URL at all seek {seek}")
+            cmd_ff=["ffmpeg","-y","-ss",str(seek),"-i",aurl,"-t",str(dur),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","error",tmp]
+        res=subprocess.run(cmd_ff,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=70)
+        if os.path.exists(tmp) and os.path.getsize(tmp)>3000:
+            print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg size {os.path.getsize(tmp)}")
+            save_last_seek(end)
+            return tmp, end
+        else:
+            print(f"FFMPEG FAIL seek {seek} err {res.stderr.decode()[:300]}")
     except Exception as e:
         print(f"dl err {seek}: {e}")
     print(f"NOT FOUND chunk {seek}-{end} - skip")
-    time.sleep(2)
+    time.sleep(1)
     return None, end
 
 MAPA={"pierwsze":"1","drugie":"2","trzecie":"3","czwarte":"4","piąte":"5","piate":"5","pierwsza":"1","druga":"2","trzecia":"3","czwarta":"4","piąta":"5"}
@@ -110,13 +138,16 @@ def clean_title(t):
     return t.strip()[:80]
 
 def main():
-    seek=START_SEEK
+    seek=load_last_seek()
     seen=set()
-    print(f"BOT V7 - miejsce + numer DOWOLNIE + FIX NOT FOUND start {seek}")
+    print(f"BOT V8 - miejsce+numery DOWOLNIE start {seek} LIVE_MODE={LIVE_MODE}")
     while True:
         wav, nxt = download_chunk(TEST_VIDEO_ID, seek, 30)
         seek=nxt
         if not wav:
+            if not LIVE_MODE and seek>7200:
+                print("Koniec VOD testu")
+                break
             time.sleep(2)
             continue
         txt=transcribe(wav)
@@ -137,9 +168,8 @@ def main():
                         print(f"firebase err {e}")
         try: os.remove(wav)
         except: pass
-        if seek>7200:
-            break
-        time.sleep(2)
+        time.sleep(1)
 
 if __name__=="__main__":
     main()
+
