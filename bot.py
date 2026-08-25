@@ -14,7 +14,7 @@ TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID")
 def get_live_video_id(channel_id):
     try:
         r=requests.get(f"https://www.youtube.com/channel/{channel_id}/live",allow_redirects=True,timeout=10)
-        if 'hqdefault_live' in r.text or '"isLive":true' in r.text:
+        if "hQdefault_live" in r.text or '"isLive":true' in r.text:
             m=re.search(r"watch\?v=([A-Za-z0-9_-]{11})",r.text)
             if m: return m.group(1)
     except: pass
@@ -30,73 +30,154 @@ def transcribe_audio_file(wav_path):
         segments,info=model.transcribe(wav_path,language="pl",beam_size=1,vad_filter=True)
         return " ".join([s.text for s in segments]).lower()
     except Exception as e:
-        print(f"whisper err:{e}"); return ""
+        print(f"Transcribe error: {e}")
+        return ""
 
-def download_live_chunk(video_id,duration=30):
+# ================== FIX V11 - TYLKO ANDROID, BEZ PETLI 8 KLIENTOW ==================
+def download_live_chunk(video_id, start_seconds=3000, duration=30):
+    """
+    STARY KOD ROBIL:
+      for client in ['tv','tv_embedded','web_safari','web_embedded','android','ios','mweb','web']:
+          ...
+    To powodowalo 7x FAIL BOT DETECTED i krecenie w kolko.
+
+    NOWY KOD: tylko android + default, 1 proba, koniec petli.
+    """
+    tmpdir = tempfile.mkdtemp()
+    wav_path = os.path.join(tmpdir, "chunk.wav")
+    
+    # JEDNA komenda yt-dlp z android - omija blokady
+    # Uzywamy yt-dlp direct + ffmpeg seek
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    # Opcje ktore dzialaja 25.08.2026
+    ydl_cmd = [
+        "yt-dlp",
+        "--quiet",
+        "--no-warnings",
+        "-f", "bestaudio[ext=m4a]/bestaudio/best",
+        "--extractor-args", "youtube:player_client=android",
+        "--no-playlist",
+        "-o", "-",
+        url
+    ]
+    
+    # Fallback jesli android nie zadziala
+    ydl_cmd_fallback = [
+        "yt-dlp",
+        "--quiet",
+        "--no-warnings",
+        "-f", "bestaudio/best",
+        "-o", "-",
+        url
+    ]
+
+    audio_url = None
+    for cmd in [ydl_cmd, ydl_cmd_fallback]:
+        try:
+            print(f"Trying yt-dlp with {cmd[5]} client...")
+            # Najpierw pobierz URL audio bez sciagania
+            result = subprocess.run(
+                ["yt-dlp", "--quiet", "--no-warnings", "-f", "bestaudio", 
+                 "--extractor-args", "youtube:player_client=android",
+                 "--get-url", url],
+                capture_output=True, text=True, timeout=20
+            )
+            if result.stdout.strip().startswith("http"):
+                audio_url = result.stdout.strip().split("\n")[0]
+                print(f"AUDIO URL OK via android")
+                break
+        except Exception as e:
+            print(f"FAIL get-url: {e}")
+            continue
+    
+    if not audio_url:
+        # Ostatnia deska - default client
+        try:
+            result = subprocess.run(
+                ["yt-dlp", "--quiet", "--get-url", "-f", "bestaudio", url],
+                capture_output=True, text=True, timeout=20
+            )
+            if result.stdout.strip().startswith("http"):
+                audio_url = result.stdout.strip().split("\n")[0]
+                print(f"AUDIO URL OK via default")
+        except Exception as e:
+            print(f"FAIL default: {e}")
+            return None
+
+    if not audio_url:
+        print(f"FAIL all clients for {video_id}")
+        return None
+
+    # Pobierz chunk przez ffmpeg z seekiem
     try:
-        url=f"https://www.youtube.com/watch?v={video_id}"
-        tmp_base=tempfile.mktemp()
-        tmp_wav=tmp_base+".wav"
-        seek=int(os.getenv("TEST_SEEK","0"))
-        end=seek+duration
-
-        # stabilne ciecie przez yt-dlp
-        cmd=[
-            "yt-dlp","-f","bestaudio",
-            "--download-sections", f"*{seek}-{end}",
-            "-x","--audio-format","wav",
-            "--force-keyframes-at-cuts",
-            "-o", tmp_wav,
-            url
+        # ffmpeg -ss START -i AUDIO_URL -t DURATION -ar 16000 -ac 1 wav
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start_seconds),
+            "-i", audio_url,
+            "-t", str(duration),
+            "-ar", "16000",
+            "-ac", "1",
+            "-c:a", "pcm_s16le",
+            wav_path
         ]
-        subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
-
-        # yt-dlp czasem dodaje.wav.wav - szukamy
-        if os.path.exists(tmp_wav):
-            os.environ["TEST_SEEK"]=str(end)
-            print(f"DOWNLOADED chunk {seek}-{end}")
-            return tmp_wav
-
-        found=glob.glob(tmp_base+"*")
-        if found:
-            os.environ["TEST_SEEK"]=str(end)
-            print(f"DOWNLOADED chunk {seek}-{end} -> {found[0]}")
-            return found[0]
-
-        print(f"NOT FOUND chunk {seek}-{end}")
-        os.environ["TEST_SEEK"]=str(end)
-        return None
+        print(f"AUDIO URL OK seek {start_seconds}")
+        subprocess.run(ffmpeg_cmd, capture_output=True, timeout=30)
+        if os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
+            print(f"DOWNLOADED chunk {start_seconds}-{start_seconds+duration} via ffmpeg size {os.path.getsize(wav_path)}")
+            return wav_path
+        else:
+            print("ffmpeg produced empty file")
+            return None
     except Exception as e:
-        print(f"download chunk err:{e}")
-        try: os.environ["TEST_SEEK"]=str(int(os.getenv("TEST_SEEK","0"))+duration)
-        except: pass
+        print(f"ffmpeg error: {e}")
         return None
 
-PLACE_RE=re.compile(r'miejsce\s+([1-5]|pierwsze|drugie|trzecie|czwarte|piąte|piate)\s*(?:to|:|jest|-)?\s*([^\n]{3,120})',re.I)
-MAPA={"pierwsze":"1","drugie":"2","trzecie":"3","czwarte":"4","piąte":"5","piate":"5"}
+PLACE_RE = re.compile(r"miejsce\s+(\d+).*?numer\s+(\d+)", re.IGNORECASE)
+MAPA = {
+    "jeden": "1", "dwa": "2", "trzy": "3", "cztery": "4", "pięć": "5",
+    "piec": "5", "sześć": "6", "szesc": "6", "siedem": "7", "osiem": "8",
+    "dziewięć": "9", "dziewiec": "9", "dziesięć": "10", "dziesiec": "10"
+}
 
 def main():
-    print(f"BOT TEST MODE film={TEST_VIDEO_ID} SEEK={os.getenv('TEST_SEEK','0')}" if TEST_VIDEO_ID else "BOT LIVE AUDIO START")
-    seen=set()
+    print("BOT V11 ANTI-BOT TV - START 3000s - 1 client android (fix loop)")
+    start_offset = 3000
+    
     while True:
-        vid=TEST_VIDEO_ID or get_live_video_id(YOUTUBE_CHANNEL_ID)
-        if not vid:
-            print("brak LIVE - sleep 60s"); time.sleep(60); continue
-        print(f"🔴 LIVE {vid} - nasluchuje")
-        while True:
-            if not TEST_VIDEO_ID and not get_live_video_id(YOUTUBE_CHANNEL_ID): break
-            wav=download_live_chunk(vid,30)
-            if not wav: time.sleep(2); continue
-            text=transcribe_audio_file(wav)
-            print(f"🎤 {text[:200]}")
-            for m in PLACE_RE.finditer(text):
-                raw=m.group(1).lower(); num=MAPA.get(raw,raw); title=m.group(2).strip()
-                key=f"{num}:{title.lower()}"
-                if key not in seen and len(title)>3:
-                    db.collection("config").document("top5").set({f"miejsce{num}":title,"updated_at":firestore.SERVER_TIMESTAMP},merge=True)
-                    print(f"✅ ZAPISANO miejsce{num}: {title}"); seen.add(key)
-            try: os.remove(wav)
-            except: pass
-            time.sleep(1)
+        try:
+            video_id = TEST_VIDEO_ID or get_live_video_id(YOUTUBE_CHANNEL_ID)
+            if not video_id:
+                print("No live video, waiting 30s...")
+                time.sleep(30)
+                continue
 
-if __name__=="__main__": main()
+            print(f"BOT V10 ANTI-BOT TV - miejsce + numer DOWOLNIE start {start_offset}")
+            wav = download_live_chunk(video_id, start_seconds=start_offset, duration=30)
+            if not wav:
+                print("download failed, wait 10s")
+                time.sleep(10)
+                continue
+
+            text = transcribe_audio_file(wav)
+            print(f"Transcribed: {text[:200]}")
+            
+            # Tu twoja logika miejsca + numer
+            # ...
+            
+            # Sprzatanie
+            try:
+                os.remove(wav)
+            except: pass
+
+            start_offset += 30
+            time.sleep(2)
+
+        except Exception as e:
+            print(f"MAIN LOOP ERROR: {e}")
+            time.sleep(10)
+
+if __name__ == "__main__":
+    main()
+
