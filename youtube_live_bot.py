@@ -7,35 +7,21 @@ cred_dict=json.loads(base64.b64decode(b64).decode('utf-8'))
 cred=credentials.Certificate(cred_dict)
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
-db=firestore.client()
+# Fix dla Invalid database id (default) - explicit client
+try:
+    db=firestore.client()
+except Exception as e:
+    print(f"firestore init err {e} - proba z database (default)")
+    db=firestore.client(database_id="(default)")
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
 START_SEEK = 3000
-
-def load_last_seek():
-    try:
-        doc=db.collection("config").document("bot_state").get()
-        if doc.exists and "last_seek" in doc.to_dict():
-            s=int(doc.to_dict()["last_seek"])
-            if s>3000:
-                print(f"LOAD last_seek z Firebase: {s} - kontynuuje, nie od 3000")
-                return s
-    except Exception as e:
-        print(f"load seek err {e}")
-    return START_SEEK
-
-def save_last_seek(s):
-    try:
-        db.collection("config").document("bot_state").set({"last_seek":s,"updated_at":firestore.SERVER_TIMESTAMP},merge=True)
-    except: pass
-
-seek_start=load_last_seek()
-print(f"BOT V7 FIX LOOP - START {seek_start}s - SMALL - dzialajacy download")
+print(f"BOT V9 ANTI-BOT - START {START_SEEK}s - SMALL - 5 clients")
 
 from faster_whisper import WhisperModel
 print("Ladowanie Whisper SMALL - 300MB...")
 model=WhisperModel("small",device="cpu",compute_type="int8")
-print("Whisper SMALL ready - slucha audio")
+print("Whisper SMALL ready")
 
 ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama","DodekLab","Carmenaigrami"]
 
@@ -68,34 +54,59 @@ def transcribe(wav):
         print(f"whisper err {e}")
         return ""
 
-def download_chunk(vid, seek, dur=30):
+def get_audio_url_with_client(vid, client_name, extra_args):
     url=f"https://www.youtube.com/watch?v={vid}"
-    tmp=tempfile.mktemp()+".wav"
-    end=seek+dur
     try:
-        # TEN KOD DZIALAL - zostawiam identycznie jak V7
-        cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio","--extractor-args","youtube:player_client=android","-g",url]
-        r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
+        if client_name=="default":
+            cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio/bestaudio","-g",url]
+        else:
+            cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio/bestaudio","--extractor-args",f"youtube:player_client={client_name}","-g",url]
+        # dodajemy no-warnings zeby logi byly czystsze
+        cmd+=["--no-warnings"]
+        r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
         out=r.stdout.decode().strip()
         err=r.stderr.decode().strip()
-        aurl=out.split("\n")[0].strip()
-        if not aurl.startswith("http"):
-            print(f"NO URL seek {seek} err {err[:200]} - proba bez android")
-            cmd2=["yt-dlp","-f","bestaudio","-g",url]
-            r2=subprocess.run(cmd2,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
-            aurl=r2.stdout.decode().strip().split("\n")[0]
+        aurl=out.split("\n")[0].strip() if out else ""
         if aurl.startswith("http"):
-            print(f"AUDIO URL OK seek {seek}")
-            cmd_ff=["ffmpeg","-y","-ss",str(seek),"-i",aurl,"-t",str(dur),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","error",tmp]
-            res=subprocess.run(cmd_ff,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=70)
-            if os.path.exists(tmp) and os.path.getsize(tmp)>3000:
-                print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg size {os.path.getsize(tmp)}")
-                save_last_seek(end)
-                return tmp, end
-            else:
-                print(f"FFMPEG FAIL seek {seek} err {res.stderr.decode()[:500]}")
+            print(f"AUDIO URL OK seek via {client_name}")
+            return aurl
         else:
-            print(f"NO AUDIO URL at all seek {seek}")
+            # pokazuj tylko krotki blad, nie caly SABR
+            short_err=err.replace("\n"," ")[:150]
+            if "bot" in short_err.lower() or "Sign in" in short_err:
+                print(f"FAIL {client_name}: BOT DETECTED - proba nastepny client")
+            else:
+                print(f"FAIL {client_name}: {short_err[:80]}")
+            return None
+    except Exception as e:
+        print(f"FAIL {client_name} exc {e}")
+        return None
+
+def download_chunk(vid, seek, dur=30):
+    tmp=tempfile.mktemp()+".wav"
+    end=seek+dur
+    # V9: probuj 5 klientow po kolei - ktorys ominie BOT DETECTION
+    clients=["android","web","ios","mweb","default"]
+    aurl=None
+    for cl in clients:
+        aurl=get_audio_url_with_client(vid, cl, "")
+        if aurl:
+            break
+        time.sleep(0.5)
+    if not aurl:
+        print(f"NO AUDIO URL at all seek {seek} - all clients blocked")
+        print(f"NOT FOUND chunk {seek}-{end} - skip")
+        time.sleep(3)
+        return None, end
+    try:
+        print(f"AUDIO URL OK seek {seek}")
+        cmd_ff=["ffmpeg","-y","-ss",str(seek),"-i",aurl,"-t",str(dur),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","error",tmp]
+        res=subprocess.run(cmd_ff,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=70)
+        if os.path.exists(tmp) and os.path.getsize(tmp)>3000:
+            print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg size {os.path.getsize(tmp)}")
+            return tmp, end
+        else:
+            print(f"FFMPEG FAIL seek {seek} err {res.stderr.decode()[:400]}")
     except Exception as e:
         print(f"dl err {seek}: {e}")
     print(f"NOT FOUND chunk {seek}-{end} - skip")
@@ -131,9 +142,9 @@ def clean_title(t):
     return t.strip()[:80]
 
 def main():
-    seek=seek_start
+    seek=START_SEEK
     seen=set()
-    print(f"BOT V7 FIX LOOP - miejsce + numer DOWOLNIE start {seek}")
+    print(f"BOT V9 ANTI-BOT - miejsce + numer DOWOLNIE start {seek}")
     while True:
         wav, nxt = download_chunk(TEST_VIDEO_ID, seek, 30)
         seek=nxt
@@ -159,8 +170,6 @@ def main():
         try: os.remove(wav)
         except: pass
         if seek>7200:
-            print("Koniec testu VOD")
-            save_last_seek(START_SEEK)
             break
         time.sleep(2)
 
