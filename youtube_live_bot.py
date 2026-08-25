@@ -7,16 +7,14 @@ cred_dict=json.loads(base64.b64decode(b64).decode('utf-8'))
 cred=credentials.Certificate(cred_dict)
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
-# Fix dla Invalid database id (default) - explicit client
 try:
     db=firestore.client()
-except Exception as e:
-    print(f"firestore init err {e} - proba z database (default)")
+except:
     db=firestore.client(database_id="(default)")
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
 START_SEEK = 3000
-print(f"BOT V9 ANTI-BOT - START {START_SEEK}s - SMALL - 5 clients")
+print(f"BOT V10 ANTI-BOT TV - START {START_SEEK}s - 8 clients")
 
 from faster_whisper import WhisperModel
 print("Ladowanie Whisper SMALL - 300MB...")
@@ -27,76 +25,63 @@ ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera
 
 def fix(t):
     return t.lower().replace("koda grace","Koda Grace").replace("zapach pomaranczy","Zapach Pomarańczy").replace("siudne","siódme").replace("indy","Andy").replace("tobicy","tablicy")
-
 def best_match(txt):
     for u in ZNANE:
-        if u.lower() in txt.lower():
-            return u
+        if u.lower() in txt.lower(): return u
     best=None; sc=0
     for u in ZNANE:
         s=difflib.SequenceMatcher(None, txt.lower(), u.lower()).ratio()
-        if s>sc and s>0.5:
-            sc=s; best=u
+        if s>sc and s>0.5: sc=s; best=u
     return best
-
 def transcribe(wav):
     try:
         clean=tempfile.mktemp()+".clean.wav"
         subprocess.run(["ffmpeg","-y","-i",wav,"-ar","16000","-ac","1","-af","loudnorm","-loglevel","quiet",clean],timeout=20)
         use=clean if os.path.exists(clean) else wav
-        segs,_=model.transcribe(use,language="pl",beam_size=5,vad_filter=True,initial_prompt="AI Arena FM TOP 15 miejsce numer trzy to Koda Grace miejsce drugie to Zapach Pomaranczy miejsce pierwsze to Poeta Ulicy miejsce czwarte to Zakazany Owoc miejsce piate to Jedna rodzina Andy tablica",hotwords="Koda Grace Zapach Pomaranczy Zakazany Owoc Jedna rodzina")
-        txt=" ".join([s.text for s in segs])
-        txt=fix(txt)
+        segs,_=model.transcribe(use,language="pl",beam_size=5,vad_filter=True,initial_prompt="AI Arena FM TOP 15 miejsce numer trzy to Koda Grace miejsce drugie to Zapach Pomaranczy miejsce pierwsze to Poeta Ulicy",hotwords="Koda Grace Zapach Pomaranczy")
+        txt=" ".join([s.text for s in segs]); txt=fix(txt)
         try: os.remove(clean)
         except: pass
         return txt
     except Exception as e:
-        print(f"whisper err {e}")
-        return ""
+        print(f"whisper err {e}"); return ""
 
-def get_audio_url_with_client(vid, client_name, extra_args):
+def get_audio_url_with_client(vid, client_name):
     url=f"https://www.youtube.com/watch?v={vid}"
     try:
         if client_name=="default":
-            cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio/bestaudio","-g",url]
+            cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio/bestaudio","-g",url,"--no-warnings","--no-check-certificate"]
         else:
-            cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio/bestaudio","--extractor-args",f"youtube:player_client={client_name}","-g",url]
-        # dodajemy no-warnings zeby logi byly czystsze
-        cmd+=["--no-warnings"]
-        r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
-        out=r.stdout.decode().strip()
-        err=r.stderr.decode().strip()
+            # player_skip=webpage,configs omija strone ktora wymaga logowania
+            cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio/bestaudio","--extractor-args",f"youtube:player_client={client_name};player_skip=webpage,configs","-g",url,"--no-warnings","--no-check-certificate"]
+        r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=35)
+        out=r.stdout.decode().strip(); err=r.stderr.decode().strip()
         aurl=out.split("\n")[0].strip() if out else ""
         if aurl.startswith("http"):
-            print(f"AUDIO URL OK seek via {client_name}")
+            print(f"AUDIO URL OK via {client_name}")
             return aurl
         else:
-            # pokazuj tylko krotki blad, nie caly SABR
-            short_err=err.replace("\n"," ")[:150]
-            if "bot" in short_err.lower() or "Sign in" in short_err:
-                print(f"FAIL {client_name}: BOT DETECTED - proba nastepny client")
+            if "bot" in err.lower() or "Sign in" in err:
+                print(f"FAIL {client_name}: BOT DETECTED")
             else:
-                print(f"FAIL {client_name}: {short_err[:80]}")
+                print(f"FAIL {client_name}: {err[:100].replace(chr(10),' ')}")
             return None
     except Exception as e:
-        print(f"FAIL {client_name} exc {e}")
-        return None
+        print(f"FAIL {client_name} exc {e}"); return None
 
 def download_chunk(vid, seek, dur=30):
-    tmp=tempfile.mktemp()+".wav"
-    end=seek+dur
-    # V9: probuj 5 klientow po kolei - ktorys ominie BOT DETECTION
-    clients=["android","web","ios","mweb","default"]
+    tmp=tempfile.mktemp()+".wav"; end=seek+dur
+    # V10: tv i tv_embedded prawie zawsze omijaja blokade
+    clients=["tv","tv_embedded","web_safari","web_embedded","android","ios","mweb","web","default"]
     aurl=None
     for cl in clients:
-        aurl=get_audio_url_with_client(vid, cl, "")
-        if aurl:
-            break
-        time.sleep(0.5)
+        aurl=get_audio_url_with_client(vid, cl)
+        if aurl: break
+        time.sleep(0.7)
     if not aurl:
-        print(f"NO AUDIO URL at all seek {seek} - all clients blocked")
+        print(f"NO AUDIO URL at all seek {seek} - all {len(clients)} clients blocked")
         print(f"NOT FOUND chunk {seek}-{end} - skip")
-        time.sleep(3)
+        time.sleep(4)
         return None, end
     try:
         print(f"AUDIO URL OK seek {seek}")
@@ -110,47 +95,35 @@ def download_chunk(vid, seek, dur=30):
     except Exception as e:
         print(f"dl err {seek}: {e}")
     print(f"NOT FOUND chunk {seek}-{end} - skip")
-    time.sleep(2)
     return None, end
 
 MAPA={"pierwsze":"1","drugie":"2","trzecie":"3","czwarte":"4","piąte":"5","piate":"5","pierwsza":"1","druga":"2","trzecia":"3","czwarta":"4","piąta":"5"}
-
 def extract(text):
     res=[]
     for m in re.finditer(r'miejsc[aeu]|pozycj[ai]', text, re.I):
         win=text[max(0,m.start()-20):m.end()+40]
         nm=re.search(r'\b([1-5])\b', win)
-        if nm:
-            res.append((nm.group(1), text[m.end():m.end()+150]))
-            continue
+        if nm: res.append((nm.group(1), text[m.end():m.end()+150])); continue
         sm=re.search(r'(pierwsze|drugie|trzecie|czwarte|piąte|piate|pierwsza|druga|trzecia|czwarta|piąta)', win, re.I)
         if sm:
             n=MAPA.get(sm.group(1).lower())
-            if n:
-                res.append((n, text[m.end():m.end()+150]))
+            if n: res.append((n, text[m.end():m.end()+150]))
     for m in re.finditer(r'numer\s*([1-5])', text, re.I):
         if "miejsc" in text[max(0,m.start()-20):m.start()+30].lower():
             res.append((m.group(1), text[m.end():m.end()+150]))
     return res
-
 def clean_title(t):
-    t=t.strip().split('.')[0][:120]
-    t=re.sub(r'^(to jest|jest to|to)\s+', '', t, flags=re.I)
+    t=t.strip().split('.')[0][:120]; t=re.sub(r'^(to jest|jest to|to)\s+', '', t, flags=re.I)
     bm=best_match(t)
-    if bm:
-        return bm
+    if bm: return bm
     return t.strip()[:80]
-
 def main():
-    seek=START_SEEK
-    seen=set()
-    print(f"BOT V9 ANTI-BOT - miejsce + numer DOWOLNIE start {seek}")
+    seek=START_SEEK; seen=set()
+    print(f"BOT V10 ANTI-BOT TV - miejsce + numer DOWOLNIE start {seek}")
     while True:
         wav, nxt = download_chunk(TEST_VIDEO_ID, seek, 30)
         seek=nxt
-        if not wav:
-            time.sleep(2)
-            continue
+        if not wav: time.sleep(2); continue
         txt=transcribe(wav)
         if txt:
             print(f"🎤 [{seek-30}-{seek}] {txt[:500]}")
@@ -163,16 +136,11 @@ def main():
                 if key not in seen:
                     try:
                         db.collection("config").document("top5").set({f"miejsce{num}":title,"updated_at":firestore.SERVER_TIMESTAMP},merge=True)
-                        print(f"✅ ZAPISANO miejsce{num}: {title}")
-                        seen.add(key)
-                    except Exception as e:
-                        print(f"firebase err {e}")
+                        print(f"✅ ZAPISANO miejsce{num}: {title}"); seen.add(key)
+                    except Exception as e: print(f"firebase err {e}")
         try: os.remove(wav)
         except: pass
-        if seek>7200:
-            break
+        if seek>7200: break
         time.sleep(2)
-
-if __name__=="__main__":
-    main()
+if __name__=="__main__": main()
 
