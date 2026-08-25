@@ -76,5 +76,5 @@ def main():
                     print(f"✅ ZAPISANO miejsce{num}: {title}"); seen.add(key)
             try: os.remove(wav)
             except: pass
-            time.sleep(1)
+            time.sleep(5)
 if __name__=="__main__": main()
