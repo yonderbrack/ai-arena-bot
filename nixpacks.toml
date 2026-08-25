@@ -6,3 +6,4 @@ cmds = ["pip3 install -r requirements.txt"]
 
 [start]
 cmd = "python3 -u youtube_live_bot.py"
+
