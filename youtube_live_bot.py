@@ -11,15 +11,14 @@ db=firestore.client()
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
 START_SEEK = 3000
-
-print(f"BOT V6 FINAL - START {START_SEEK}s - SMALL - FIX NOT FOUND")
+print(f"BOT V7 FINAL SMALL - START {START_SEEK}s - FIX NOT FOUND - MIEJSCE+NUMER DOWOLNIE")
 
 from faster_whisper import WhisperModel
 print("Ladowanie Whisper SMALL - 300MB...")
 model=WhisperModel("small",device="cpu",compute_type="int8")
 print("Whisper SMALL ready - slucha audio")
 
-ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama"]
+ZNANE=["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama","DodekLab","Carmenaigrami"]
 
 def fix(t):
     return t.lower().replace("koda grace","Koda Grace").replace("zapach pomaranczy","Zapach Pomarańczy").replace("siudne","siódme").replace("indy","Andy").replace("tobicy","tablicy")
@@ -58,9 +57,10 @@ def download_chunk(vid, seek, dur=30):
         cmd=["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio","--extractor-args","youtube:player_client=android","-g",url]
         r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
         out=r.stdout.decode().strip()
+        err=r.stderr.decode().strip()
         aurl=out.split("\n")[0].strip()
         if not aurl.startswith("http"):
-            print(f"NO URL seek {seek} - probuje bez android")
+            print(f"NO URL seek {seek} err {err[:200]} - proba bez android")
             cmd2=["yt-dlp","-f","bestaudio","-g",url]
             r2=subprocess.run(cmd2,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=40)
             aurl=r2.stdout.decode().strip().split("\n")[0]
@@ -74,7 +74,7 @@ def download_chunk(vid, seek, dur=30):
             else:
                 print(f"FFMPEG FAIL seek {seek} err {res.stderr.decode()[:500]}")
         else:
-            print(f"NO AUDIO URL at all seek {seek} out {out[:200]}")
+            print(f"NO AUDIO URL at all seek {seek}")
     except Exception as e:
         print(f"dl err {seek}: {e}")
     print(f"NOT FOUND chunk {seek}-{end} - skip")
@@ -112,7 +112,7 @@ def clean_title(t):
 def main():
     seek=START_SEEK
     seen=set()
-    print(f"BOT V6 - miejsce + numer DOWOLNIE + FIX NOT FOUND start {seek}")
+    print(f"BOT V7 - miejsce + numer DOWOLNIE + FIX NOT FOUND start {seek}")
     while True:
         wav, nxt = download_chunk(TEST_VIDEO_ID, seek, 30)
         seek=nxt
