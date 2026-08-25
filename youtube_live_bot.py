@@ -11,166 +11,125 @@ if not firebase_admin._apps:
 db=firestore.client()
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
-START_SEEK = 3000  # SZTYWNO 3000s - ignoruje Railway TEST_SEEK
+START_SEEK = 3000  # SZTYWNO 3000s - FIX NOT FOUND
 
-print(f"BOT V4 START od {START_SEEK}s - FIX NOT FOUND + SMALL + SLOWNIK")
+print(f"BOT V4 FIX NOT FOUND START od {START_SEEK}s - SMALL + SLOWNIK")
 
 from faster_whisper import WhisperModel
-print("Ladowanie Whisper SMALL PL...")
+print("Ladowanie Whisper SMALL PL - 300MB...")
 model=WhisperModel("small",device="cpu",compute_type="int8")
-print("Whisper SMALL ready - FIX NOT FOUND")
+print("Whisper SMALL ready - slucha")
 
-ZNANE_UTWORY = [
-    "Poeta Ulicy List do nieba",
-    "Soulforge Rising Broken But Still Fighting",
-    "AGA-MUSIC Tato gdzie jest Mama",
-    "A.AWE56 SZCZERA DO BOLU",
-    "Miami69Records Kto sieje wiatr ten zbiera burze",
-    "Wilkor Historia z rozdroz",
-    "Poland Czarny Krawat Elegantka",
-    "pawlo Jedna rodzina",
-    "DodekLab Zakazany Owoc",
-    "Carmenaigrami Zapach Pomaranczy",
-    "Sound Studio Jestesmy w raju",
-    "Koda Grace",
-    "Zapach Pomaranczy",
-    "Zakazany Owoc",
-    "Jedna rodzina",
-    "Szczera do bolu",
-    "Czarny Krawat"
-]
+ZNANE = ["Koda Grace","Zapach Pomaranczy","Zakazany Owoc","Jedna rodzina","Szczera do bolu","Czarny Krawat","Poeta Ulicy List do nieba","Wilkor Historia z rozdroz","Tato gdzie jest Mama","Soulforge Rising","DodekLab","Carmenaigrami","Pawlo","Miami69Records","AGA-MUSIC"]
 
-def fix_text(t):
-    corr={"siudne":"siódme","siudme":"siódme","indy":"Andy","tobicy":"tablicy","pedrak":"Pędrak","koda grace":"Koda Grace","zapach pomaranczy":"Zapach Pomarańczy","zakazany owoc":"Zakazany Owoc","jedna rodzina":"Jedna rodzina","szczera do bolu":"Szczera do bólu"}
+def fix(t):
+    m={"siudne":"siódme","indy":"Andy","tobicy":"tablicy","pedrak":"Pędrak","koda grace":"Koda Grace","zapach pomaranczy":"Zapach Pomarańczy","zakazany owoc":"Zakazany Owoc","jedna rodzina":"Jedna rodzina"}
     low=t.lower()
-    for k,v in corr.items():
+    for k,v in m.items():
         low=low.replace(k,v.lower())
     return low
 
-def find_best_match(txt):
-    best=None; best_score=0
-    for u in ZNANE_UTWORY:
+def best_match(txt):
+    best=None; sc=0
+    for u in ZNANE:
         s=difflib.SequenceMatcher(None, txt.lower(), u.lower()).ratio()
-        for w in u.lower().split():
-            if len(w)>4 and w in txt.lower():
-                s+=0.15
-        if s>best_score and s>0.45:
-            best_score=s; best=u
-    return best,best_score
+        if s>sc and s>0.5:
+            sc=s; best=u
+    return best
 
-def transcribe_audio_file(wav_path):
+def transcribe(wav):
     try:
-        tmp_clean=tempfile.mktemp()+".clean.wav"
-        subprocess.run(["ffmpeg","-y","-i",wav_path,"-ar","16000","-ac","1","-af","loudnorm=I=-16:TP=-1:LRA=11","-loglevel","quiet",tmp_clean],timeout=20)
-        use_path=tmp_clean if os.path.exists(tmp_clean) else wav_path
-        segments,_=model.transcribe(
-            use_path,
-            language="pl",
-            beam_size=5,
-            vad_filter=True,
-            initial_prompt="Lista przebojow AI Arena FM TOP 15. Miejsce numer trzy to Koda Grace. Miejsce drugie to Carmenaigrami Zapach Pomaranczy. Na miejscu czwartym jest DodekLab Zakazany Owoc. Miejsce piate to pawlo Jedna rodzina. Andy tablica wynikow.",
-            hotwords="Koda Grace Zapach Pomaranczy Zakazany Owoc Jedna rodzina Szczera do bolu Czarny Krawat Koda Grace Andy tablica"
-        )
-        text=" ".join([s.text for s in segments])
-        text=fix_text(text)
-        try: os.remove(tmp_clean)
+        clean=tempfile.mktemp()+".clean.wav"
+        subprocess.run(["ffmpeg","-y","-i",wav,"-ar","16000","-ac","1","-af","loudnorm=I=-16:TP=-1:LRA=11","-loglevel","quiet",clean],timeout=20)
+        use=clean if os.path.exists(clean) else wav
+        segs,_=model.transcribe(use,language="pl",beam_size=5,vad_filter=True,initial_prompt="AI Arena FM TOP 15 miejsce numer trzy to Koda Grace miejsce drugie to Zapach Pomaranczy miejsce pierwsze to Poeta Ulicy miejsce czwarte to Zakazany Owoc miejsce piate to Jedna rodzina Andy tablica",hotwords="Koda Grace Zapach Pomaranczy Zakazany Owoc Jedna rodzina Andy tablica")
+        txt=" ".join([s.text for s in segs])
+        txt=fix(txt)
+        try: os.remove(clean)
         except: pass
-        return text
+        return txt
     except Exception as e:
-        print(f"whisper err:{e}")
+        print(f"whisper err {e}")
         return ""
 
-def download_live_chunk(video_id, seek, duration=30):
-    # METODA 1: yt-dlp -g + ffmpeg -ss (NIE ROBI NOT FOUND)
+def download_chunk(vid, seek, dur=30):
     try:
-        url=f"https://www.youtube.com/watch?v={video_id}"
-        tmp_wav=tempfile.mktemp()+".wav"
-        end=seek+duration
-        # pobierz link audio
+        url=f"https://www.youtube.com/watch?v={vid}"
+        tmp=tempfile.mktemp()+".wav"
+        end=seek+dur
+        # METODA FFMPEG - nie robi NOT FOUND
         cmd_url=["yt-dlp","-f","bestaudio","--extractor-args","youtube:player_client=android","-g","--no-playlist",url]
         r=subprocess.run(cmd_url,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
-        audio_url=r.stdout.decode().strip().split("\n")[0]
-        if not audio_url or "http" not in audio_url:
-            print(f"NO AUDIO URL for {seek}")
-            raise Exception("no url")
-        # wytnij chunk ffmpegiem
-        cmd_ff=["ffmpeg","-y","-ss",str(seek),"-i",audio_url,"-t",str(duration),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","quiet",tmp_wav]
-        subprocess.run(cmd_ff,timeout=60)
-        if os.path.exists(tmp_wav) and os.path.getsize(tmp_wav)>1000:
-            print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg")
-            return tmp_wav, end
-        print(f"FFMPEG empty {seek}")
-    except Exception as e:
-        print(f"ffmpeg method err {seek}: {e}")
-    # METODA 2 FALLBACK: download-sections
-    try:
-        tmp_base=tempfile.mktemp()
-        tmp_wav2=tmp_base+".wav"
-        cmd=["yt-dlp","-f","bestaudio","--extractor-args","youtube:player_client=android","--no-playlist","--download-sections",f"*{seek}-{seek+duration}","-x","--audio-format","wav","-o",tmp_wav2, url]
+        aurl=r.stdout.decode().strip().split("\n")[0]
+        if aurl and "http" in aurl:
+            cmd_ff=["ffmpeg","-y","-ss",str(seek),"-i",aurl,"-t",str(dur),"-ar","16000","-ac","1","-c:a","pcm_s16le","-loglevel","quiet",tmp]
+            subprocess.run(cmd_ff,timeout=60)
+            if os.path.exists(tmp) and os.path.getsize(tmp)>2000:
+                print(f"DOWNLOADED chunk {seek}-{end} via ffmpeg")
+                return tmp, end
+        # FALLBACK sections
+        base=tempfile.mktemp()
+        out=base+".wav"
+        cmd=["yt-dlp","-f","bestaudio","--extractor-args","youtube:player_client=android","--no-playlist","--download-sections",f"*{seek}-{end}","-x","--audio-format","wav","-o",out,url]
         subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=90)
-        if os.path.exists(tmp_wav2):
-            print(f"DOWNLOADED chunk {seek}-{seek+duration} via sections")
-            return tmp_wav2, seek+duration
-        found=glob.glob(tmp_base+"*")
-        if found:
-            return found[0], seek+duration
+        if os.path.exists(out):
+            print(f"DOWNLOADED chunk {seek}-{end} via sections")
+            return out, end
+        f=glob.glob(base+"*")
+        if f:
+            return f[0], end
     except Exception as e:
-        print(f"sections err {e}")
-    print(f"NOT FOUND chunk {seek}-{seek+duration} - probuje dalej")
-    time.sleep(5)
-    return None, seek+duration
+        print(f"dl err {seek}: {e}")
+    print(f"NOT FOUND chunk {seek}-{seek+dur}")
+    time.sleep(3)
+    return None, seek+dur
 
 MAPA={"pierwsze":"1","drugie":"2","trzecie":"3","czwarte":"4","piąte":"5","piate":"5","pierwsza":"1","druga":"2","trzecia":"3","czwarta":"4","piąta":"5"}
 
-def extract_place(text):
+def extract(text):
     res=[]
-    # wszystkie warianty: miejsce, miejscU, miejscA, pozycja, numer - w dowolnej kolejnosci
-    patterns = [
-        r'miejsc[aeu]\s*(?:numer\s*)?([1-5])',
-        r'miejsc[aeu].*?numer\s*([1-5])',
-        r'numer\s*([1-5]).*?miejsc[aeu]',
-        r'pozycj[ai]\s*(?:numer\s*)?([1-5])',
-        r'\b([1-5])\s*miejsc[aeu]',
-        r'miejsc[aeu]\s*(pierwsze|drugie|trzecie|czwarte|piąte|piate)',
-        r'(pierwsze|drugie|trzecie|czwarte|piąte|piate)\s*miejsc[aeu]'
-    ]
-    for pat in patterns:
-        for m in re.finditer(pat, text, re.I):
-            raw=m.group(1)
-            if not raw: continue
-            num=MAPA.get(raw.lower(), raw)
-            title_win=text[m.end():m.end()+150]
-            res.append((num, title_win))
+    for m in re.finditer(r'miejsc[aeu]|pozycj[ai]', text, re.I):
+        win=text[max(0,m.start()-15):m.end()+35]
+        num=re.search(r'\b([1-5])\b', win)
+        if not num:
+            sm=re.search(r'(pierwsze|drugie|trzecie|czwarte|piąte|piate|pierwsza|druga|trzecia|czwarta|piąta)', win, re.I)
+            if sm:
+                n=MAPA.get(sm.group(1).lower())
+                if n:
+                    res.append((n, text[m.end():m.end()+150]))
+            continue
+        res.append((num.group(1), text[m.end():m.end()+150]))
+    for m in re.finditer(r'numer\s*([1-5]).*?miejsc[aeu]|([1-5])\s*miejsc[aeu]', text, re.I):
+        n=m.group(1) or m.group(2)
+        if n:
+            res.append((n, text[m.end():m.end()+150]))
     return res
 
-def clean_title(t):
+def clean(t):
     t=t.strip().split('.')[0][:120]
-    t=re.sub(r'^(to jest|jest to|to|jest)\s+', '', t, flags=re.I)
-    best,score=find_best_match(t)
-    if best and score>0.5:
-        return best
-    t=re.sub(r'\s+to swoim.*$', '', t, re.I)
+    t=re.sub(r'^(to jest|jest to|to)\s+', '', t, flags=re.I)
+    bm=best_match(t)
+    if bm:
+        return bm
     return t.strip()[:80]
 
 def main():
     seek=START_SEEK
     seen=set()
-    print("BOT V4 - miejsce + numer dowolna kolejnosc + FIX NOT FOUND")
     while True:
-        wav, next_seek = download_live_chunk(TEST_VIDEO_ID, seek, 30)
-        seek=next_seek
+        wav, nxt = download_chunk(TEST_VIDEO_ID, seek, 30)
+        seek=nxt
         if not wav:
-            time.sleep(3)
+            time.sleep(2)
             continue
-        text=transcribe_audio_file(wav)
-        if text:
-            print(f"🎤 [{seek-30}-{seek}] {text[:500]}")
-            for num, raw in extract_place(text):
+        txt=transcribe(wav)
+        if txt:
+            print(f"🎤 [{seek-30}-{seek}] {txt[:500]}")
+            for num, raw in extract(txt):
                 print(f"  -> WYKRYTO miejsce={num} raw='{raw[:100]}'")
-                title=clean_title(raw)
+                title=clean(raw)
                 print(f"  -> clean='{title}'")
                 if len(title)<4: continue
-                if "punkty" in title.lower(): continue
                 key=f"{num}:{title.lower()}"
                 if key not in seen:
                     try:
@@ -182,7 +141,6 @@ def main():
         try: os.remove(wav)
         except: pass
         if seek>7200:
-            print("KONIEC")
             break
         time.sleep(2)
 
