@@ -33,7 +33,7 @@ def download_live_chunk(video_id,duration=30):
         tmp_wav=tmp_base+".wav"
         seek=int(os.getenv("TEST_SEEK","0"))
         end=seek+duration
-        cmd=["yt-dlp","-f","bestaudio","--download-sections",f"*{seek}-{end}","-x","--audio-format","wav","--force-keyframes-at-cuts","-o",tmp_wav,url]
+        cmd=["yt-dlp","-f","bestaudio","--extractor-args","youtube:player_client=android","--no-playlist","--sleep-requests","2","--retries","10","--download-sections",f"*{seek}-{end}","-x","--audio-format","wav","--force-keyframes-at-cuts","-o",tmp_wav,url]
         subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
         if os.path.exists(tmp_wav):
             os.environ["TEST_SEEK"]=str(end)
