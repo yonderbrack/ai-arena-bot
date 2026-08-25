@@ -1,4 +1,4 @@
-import os, re, time, json, base64, tempfile, subprocess, glob
+import os, re, time, json, base64, requests, tempfile, subprocess, glob
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -10,10 +10,11 @@ if not firebase_admin._apps:
 db=firestore.client()
 
 TEST_VIDEO_ID=os.getenv("TEST_VIDEO_ID", "gAgi3qMpqIU")
-START_SEEK = int(os.getenv("TEST_SEEK", "1800"))
+START_SEEK = int(os.getenv("TEST_SEEK", "1800")) # 30 minuta
 
 print(f"BOT START od {START_SEEK}s (30 min) do 7200s (120 min) film={TEST_VIDEO_ID}")
 
+# --- WHISPER ---
 from faster_whisper import WhisperModel
 print("Ladowanie Whisper tiny PL...")
 model=WhisperModel("tiny",device="cpu",compute_type="int8")
@@ -34,6 +35,7 @@ def download_live_chunk(video_id, seek, duration=30):
         tmp_base=tempfile.mktemp()
         tmp_wav=tmp_base+".wav"
         end=seek+duration
+        # OBEJŚCIE BOTA YOUTUBE - android client
         cmd=["yt-dlp","-f","bestaudio",
              "--extractor-args","youtube:player_client=android",
              "--no-playlist","--sleep-requests","1","--retries","20",
@@ -42,6 +44,7 @@ def download_live_chunk(video_id, seek, duration=30):
              "--force-keyframes-at-cuts",
              "-o",tmp_wav, url]
         subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=90)
+        # yt-dlp czasem tworzy plik z innym rozszerzeniem
         if os.path.exists(tmp_wav):
             print(f"DOWNLOADED chunk {seek}-{end}")
             return tmp_wav, end
@@ -55,6 +58,7 @@ def download_live_chunk(video_id, seek, duration=30):
         print(f"download chunk err:{e}")
         return None, seek+duration
 
+# Łapie wszystkie warianty: miejsce 5 to, na miejscu 5, piąte miejsce, miejsce numer 5, miejsce piąte
 PLACE_RE = re.compile(r'(?:miejsce\s*(?:numer)?\s*([1-5])|([1-5])\s*miejsce|miejsce\s*(pierwsze|drugie|trzecie|czwarte|piąte|piate))\s*(?:to|:|jest|to jest|-)?\s*([^\n.,]{3,120})', re.I)
 MAPA={"pierwsze":"1","drugie":"2","trzecie":"3","czwarte":"4","piąte":"5","piate":"5"}
 
@@ -71,11 +75,14 @@ def main():
         if text:
             print(f"🎤 [{seek-30}-{seek}] {text[:250]}")
             for m in PLACE_RE.finditer(text):
+                # grupa 1 = cyfra, grupa 2 = cyfra z "1 miejsce", grupa 3 = słownie
                 raw_num = m.group(1) or m.group(2) or m.group(3)
-                if not raw_num: continue
+                if not raw_num:
+                    continue
                 raw_num = raw_num.lower()
                 num = MAPA.get(raw_num, raw_num)
                 title = m.group(4).strip()
+                # odfiltruj śmieci
                 if len(title) < 4: continue
                 if "punkty różnicy" in title: continue
                 if "lista cała" in title: continue
@@ -89,6 +96,7 @@ def main():
                         print(f"firebase err {e}")
         try: os.remove(wav)
         except: pass
+        # jeśli dolecieliśmy do końca filmu (> 90 min), zakończ
         if seek > 7200:
             print("KONIEC filmu - osiągnięto 7200s (120 min)")
             break
