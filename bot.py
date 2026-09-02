@@ -18,18 +18,18 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @tasks.loop(minutes=5)
 async def check_lista():
     now = datetime.now()
-    # 3 = czwartek (0=pon, 3=czw)
-    is_thursday = now.weekday() == 3
+    # 1=wtorek, 2=sroda, 3=czwartek (0=pon)
+    is_active_day = now.weekday() in [1, 2, 3]
 
     # DO TESTOWANIA: zakomentuj linijke wyzej i odkomentuj ponizej zeby testowac teraz:
-    # is_thursday = True
+    # is_active_day = True
 
-    if not is_thursday:
-        print(f"[{now.strftime('%a %H:%M')}] Nie czwartek - spie do czwartku")
+    if not is_active_day:
+        print(f"[{now.strftime('%a %H:%M')}] Nie wt/sr/czw - spie do wtorku")
         return
 
     try:
-        print(f"[{now}] CZWARTEK - sprawdzam liste...")
+        print(f"[{now}] WT/SR/CZW - sprawdzam liste...")
         cid = int(os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID"))
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         all_lines = []
@@ -52,15 +52,16 @@ async def check_lista():
                 "utwory": sorted_list,
                 "count": len(sorted_list),
                 "updated_at": firestore.SERVER_TIMESTAMP,
-                "updated_day": "czwartek"
+                "updated_day": "wtorek-sroda-czwartek"
             })
-            print(f"ZAPISANO {len(sorted_list)} do lista/aktualna - CZWARTEK")
+            print(f"ZAPISANO {len(sorted_list)} do lista/aktualna - WT/SR/CZW")
     except Exception as e:
         print(f"ERROR lista: {e}")
 
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - tryb CZWARTEK 00:00-23:59")
+    print(f"READY {bot.user} - tryb WT/SR/CZW 00:00-23:59")
     check_lista.start()
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
