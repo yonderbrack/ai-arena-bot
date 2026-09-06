@@ -112,10 +112,16 @@ async def sync_members():
             print(f"ERROR członkowie: nie znaleziono serwera {guild_id}")
             return
 
+        print(
+            f"CZŁONKOWIE: znaleziono serwer w cache: "
+            f"{guild.name} ({guild.id})"
+        )
+
         # Wymuszenie pobrania członków z Discorda.
         # Wymaga włączonego Server Members Intent w Developer Portal.
         try:
             await guild.chunk()
+            print("CZŁONKOWIE: wykonano chunk()")
         except Exception as e:
             print(f"UWAGA chunk członków: {e}")
 
@@ -126,26 +132,46 @@ async def sync_members():
             f"na serwerze {guild.name}"
         )
 
-        batch = db.batch()
         collection = db.collection("czlonkowie")
+
+        # Firestore Batch ma limit 500 operacji.
+        # Robimy partie po maksymalnie 400, żeby bezpiecznie
+        # obsłużyć większy serwer.
+        batch = db.batch()
+        batch_count = 0
+        saved_count = 0
 
         for member in members:
             doc_ref = collection.document(str(member.id))
 
-            # Tylko dane członka.
-            # Nie ruszamy PIN-ów ani istniejących danych.
+            # merge=True:
+            # nie usuwamy i nie nadpisujemy istniejących pól,
+            # np. PIN-ów.
             batch.set(doc_ref, {
                 "discord_id": str(member.id),
                 "username": member.name,
                 "display_name": member.display_name
             }, merge=True)
 
-        if members:
+            batch_count += 1
+
+            if batch_count >= 400:
+                batch.commit()
+                saved_count += batch_count
+                print(
+                    f"CZŁONKOWIE: zapisano partię {batch_count} "
+                    f"(łącznie {saved_count})"
+                )
+                batch = db.batch()
+                batch_count = 0
+
+        if batch_count > 0:
             batch.commit()
+            saved_count += batch_count
 
         print(
             f"CZŁONKOWIE: zapisano/zaktualizowano "
-            f"{len(members)} rekordów w Firebase → czlonkowie"
+            f"{saved_count} rekordów w Firebase → czlonkowie"
         )
 
     except Exception as e:
@@ -163,8 +189,9 @@ async def on_ready():
     if not check_lista.is_running():
         check_lista.start()
 
-    # Synchronizacja członków tylko po uruchomieniu/reconnectcie.
+    print("TEST: START sync_members()")
     await sync_members()
+    print("TEST: KONIEC sync_members()")
 
 
 # ============================================================
