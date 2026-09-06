@@ -4,24 +4,42 @@ from discord.ext import commands, tasks
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# ============================================================
+# FIREBASE
+# ============================================================
+
 b64 = os.getenv("FIREBASE_B64")
-cred_dict = json.loads(base64.b64decode(b64).decode('utf-8'))
+cred_dict = json.loads(base64.b64decode(b64).decode("utf-8"))
 cred = credentials.Certificate(cred_dict)
+
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
+
 db = firestore.client()
+
+# ============================================================
+# DISCORD
+# ============================================================
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ============================================================
+# LISTA UTWORÓW — ISTNIEJĄCY MECHANIZM, BEZ ZMIAN
+# ============================================================
 
 @tasks.loop(minutes=5)
 async def check_lista():
     now = datetime.now()
+
     # 1=wtorek, 2=sroda, 3=czwartek (0=pon)
     is_active_day = now.weekday() in [1, 2, 3]
 
-    # DO TESTOWANIA: zakomentuj linijke wyzej i odkomentuj ponizej zeby testowac teraz:
+    # DO TESTOWANIA:
+    # zakomentuj linijke wyzej i odkomentuj ponizej
     # is_active_day = True
 
     if not is_active_day:
@@ -30,23 +48,40 @@ async def check_lista():
 
     try:
         print(f"[{now}] WT/SR/CZW - sprawdzam liste...")
+
         cid = int(os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID"))
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+
         all_lines = []
+
         async for msg in ch.history(limit=200):
-            if not msg.content: continue
+            if not msg.content:
+                continue
+
             for raw in msg.content.split("\n"):
                 raw = raw.strip()
-                if not raw: continue
-                if re.match(r'^\d+[\.\)]?\s*', raw):
+
+                if not raw:
+                    continue
+
+                if re.match(r"^\d+[\.\)]?\s*", raw):
                     all_lines.append(raw)
+
         uniq = {}
+
         for line in all_lines:
-            m = re.match(r'^\s*(\d+)', line)
+            m = re.match(r"^\s*(\d+)", line)
+
             if m:
                 uniq[int(m.group(1))] = line
+
         sorted_list = [uniq[k] for k in sorted(uniq.keys())]
-        print(f"Znaleziono {len(all_lines)} linii, unikalnych {len(sorted_list)}")
+
+        print(
+            f"Znaleziono {len(all_lines)} linii, "
+            f"unikalnych {len(sorted_list)}"
+        )
+
         if len(sorted_list) >= 1:
             db.collection("lista").document("aktualna").set({
                 "utwory": sorted_list,
@@ -54,14 +89,86 @@ async def check_lista():
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "updated_day": "wtorek-sroda-czwartek"
             })
-            print(f"ZAPISANO {len(sorted_list)} do lista/aktualna - WT/SR/CZW")
+
+            print(
+                f"ZAPISANO {len(sorted_list)} do lista/aktualna "
+                f"- WT/SR/CZW"
+            )
+
     except Exception as e:
         print(f"ERROR lista: {e}")
+
+
+# ============================================================
+# CZŁONKOWIE SERWERA — NOWA FUNKCJA
+# ============================================================
+
+async def sync_members():
+    try:
+        guild_id = int(os.getenv("GUILD_ID") or "1515466354113777715")
+        guild = bot.get_guild(guild_id)
+
+        if guild is None:
+            print(f"ERROR członkowie: nie znaleziono serwera {guild_id}")
+            return
+
+        # Wymuszenie pobrania członków z Discorda.
+        # Wymaga włączonego Server Members Intent w Developer Portal.
+        try:
+            await guild.chunk()
+        except Exception as e:
+            print(f"UWAGA chunk członków: {e}")
+
+        members = list(guild.members)
+
+        print(
+            f"CZŁONKOWIE: znaleziono {len(members)} "
+            f"na serwerze {guild.name}"
+        )
+
+        batch = db.batch()
+        collection = db.collection("czlonkowie")
+
+        for member in members:
+            doc_ref = collection.document(str(member.id))
+
+            # Tylko dane członka.
+            # Nie ruszamy PIN-ów ani istniejących danych.
+            batch.set(doc_ref, {
+                "discord_id": str(member.id),
+                "username": member.name,
+                "display_name": member.display_name
+            }, merge=True)
+
+        if members:
+            batch.commit()
+
+        print(
+            f"CZŁONKOWIE: zapisano/zaktualizowano "
+            f"{len(members)} rekordów w Firebase → czlonkowie"
+        )
+
+    except Exception as e:
+        print(f"ERROR członkowie: {e}")
+
+
+# ============================================================
+# START
+# ============================================================
 
 @bot.event
 async def on_ready():
     print(f"READY {bot.user} - tryb WT/SR/CZW 00:00-23:59")
-    check_lista.start()
+
+    if not check_lista.is_running():
+        check_lista.start()
+
+    # Synchronizacja członków tylko po uruchomieniu/reconnectcie.
+    await sync_members()
+
+
+# ============================================================
+# BOT
+# ============================================================
 
 bot.run(os.getenv("DISCORD_TOKEN"))
-
