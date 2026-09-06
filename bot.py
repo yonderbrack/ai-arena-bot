@@ -113,30 +113,29 @@ async def sync_members():
             return
 
         print(
-            f"CZŁONKOWIE: znaleziono serwer w cache: "
+            f"CZŁONKOWIE: znaleziono serwer: "
             f"{guild.name} ({guild.id})"
         )
 
-        # Wymuszenie pobrania członków z Discorda.
-        # Wymaga włączonego Server Members Intent w Developer Portal.
-        try:
-            await guild.chunk()
-            print("CZŁONKOWIE: wykonano chunk()")
-        except Exception as e:
-            print(f"UWAGA chunk członków: {e}")
+        print("CZŁONKOWIE: pobieram listę przez Discord API...")
 
-        members = list(guild.members)
+        members = []
+
+        # fetch_members() pobiera członków przez HTTP API.
+        # Nie używamy guild.chunk(), ponieważ wcześniejsza wersja
+        # zawieszała się na tym wywołaniu.
+        async for member in guild.fetch_members(limit=None):
+            members.append(member)
 
         print(
-            f"CZŁONKOWIE: znaleziono {len(members)} "
-            f"na serwerze {guild.name}"
+            f"CZŁONKOWIE: Discord API zwróciło "
+            f"{len(members)} członków"
         )
 
         collection = db.collection("czlonkowie")
 
         # Firestore Batch ma limit 500 operacji.
-        # Robimy partie po maksymalnie 400, żeby bezpiecznie
-        # obsłużyć większy serwer.
+        # Używamy maksymalnie 400 na jedną partię.
         batch = db.batch()
         batch_count = 0
         saved_count = 0
@@ -145,23 +144,29 @@ async def sync_members():
             doc_ref = collection.document(str(member.id))
 
             # merge=True:
-            # nie usuwamy i nie nadpisujemy istniejących pól,
-            # np. PIN-ów.
-            batch.set(doc_ref, {
-                "discord_id": str(member.id),
-                "username": member.name,
-                "display_name": member.display_name
-            }, merge=True)
+            # NIE usuwamy istniejących danych.
+            # PIN-y i inne pola pozostają bez zmian.
+            batch.set(
+                doc_ref,
+                {
+                    "discord_id": str(member.id),
+                    "username": member.name,
+                    "display_name": member.display_name
+                },
+                merge=True
+            )
 
             batch_count += 1
 
             if batch_count >= 400:
                 batch.commit()
                 saved_count += batch_count
+
                 print(
                     f"CZŁONKOWIE: zapisano partię {batch_count} "
                     f"(łącznie {saved_count})"
                 )
+
                 batch = db.batch()
                 batch_count = 0
 
@@ -175,7 +180,7 @@ async def sync_members():
         )
 
     except Exception as e:
-        print(f"ERROR członkowie: {e}")
+        print(f"ERROR członkowie: {type(e).__name__}: {e}")
 
 
 # ============================================================
