@@ -184,6 +184,154 @@ async def sync_members():
 
 
 # ============================================================
+# ARCHIWUM UTWORÓW — NOWA FUNKCJA
+# ============================================================
+
+async def sync_archiwum():
+    try:
+        print("ARCHIWUM: rozpoczynam pobieranie historii kanału...")
+
+        cid = int(os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID"))
+        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+
+        entries = []
+
+        # ====================================================
+        # CZYTAMY CAŁĄ HISTORIĘ KANAŁU
+        # ====================================================
+
+        async for msg in ch.history(limit=None):
+            if not msg.content:
+                continue
+
+            text = msg.content
+
+            # ------------------------------------------------
+            # Usuwamy markdownowe linki:
+            # [tekst](https://...)
+            # ------------------------------------------------
+
+            text = re.sub(
+                r"\[([^\]]+)\]\([^)]+\)",
+                r"\1",
+                text
+            )
+
+            # ------------------------------------------------
+            # Usuwamy zwykłe linki:
+            # https://...
+            # ------------------------------------------------
+
+            text = re.sub(
+                r"https?://\S+",
+                "",
+                text
+            )
+
+            # ------------------------------------------------
+            # Czytamy każdą linię osobno
+            # ------------------------------------------------
+
+            for raw in text.splitlines():
+                raw = raw.strip()
+
+                if not raw:
+                    continue
+
+                # ------------------------------------------------
+                # Usuwamy numer:
+                #
+                # 1 Wykonawca Tytuł
+                # 1. Wykonawca Tytuł
+                # 1) Wykonawca Tytuł
+                # ------------------------------------------------
+
+                raw = re.sub(
+                    r"^\s*\d+[\.\)]?\s*",
+                    "",
+                    raw
+                ).strip()
+
+                if not raw:
+                    continue
+
+                # ------------------------------------------------
+                # Lista z Discorda ma kolumny oddzielone
+                # większą ilością spacji/tabulatorami.
+                # ------------------------------------------------
+
+                parts = re.split(r"\s{2,}|\t+", raw)
+
+                if len(parts) >= 2:
+                    wykonawca = parts[0].strip()
+                    tytul = parts[1].strip()
+
+                    if wykonawca and tytul:
+                        entries.append({
+                            "wykonawca": wykonawca,
+                            "tytul": tytul
+                        })
+
+        print(
+            f"ARCHIWUM: znaleziono {len(entries)} wpisów "
+            f"przed usunięciem duplikatów"
+        )
+
+        # ====================================================
+        # USUWANIE DUPLIKATÓW
+        # ====================================================
+
+        unique = {}
+        display_entries = []
+
+        for entry in entries:
+
+            wykonawca = entry["wykonawca"].strip()
+            tytul = entry["tytul"].strip()
+
+            # Normalizacja tylko do porównania.
+            # Oryginalna pisownia zostaje zachowana.
+            key = (
+                re.sub(r"\s+", " ", wykonawca).lower(),
+                re.sub(r"\s+", " ", tytul).lower()
+            )
+
+            if key not in unique:
+                unique[key] = True
+
+                display_entries.append({
+                    "wykonawca": wykonawca,
+                    "tytul": tytul
+                })
+
+        print(
+            f"ARCHIWUM: po usunięciu duplikatów "
+            f"pozostało {len(display_entries)} utworów"
+        )
+
+        # ====================================================
+        # ZAPIS DO FIREBASE
+        # ====================================================
+
+        db.collection("archiwum").document("utwory").set({
+            "utwory": display_entries,
+            "count": len(display_entries),
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
+
+        print(
+            f"ARCHIWUM: ZAPISANO {len(display_entries)} "
+            f"utworów do archiwum/utwory"
+        )
+
+    except Exception as e:
+        print(
+            f"ERROR archiwum: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
+# ============================================================
 # START
 # ============================================================
 
@@ -197,6 +345,10 @@ async def on_ready():
     print("TEST: START sync_members()")
     await sync_members()
     print("TEST: KONIEC sync_members()")
+
+    print("TEST: START sync_archiwum()")
+    await sync_archiwum()
+    print("TEST: KONIEC sync_archiwum()")
 
 
 # ============================================================
