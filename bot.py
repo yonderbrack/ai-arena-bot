@@ -98,7 +98,6 @@ async def check_lista():
     except Exception as e:
         print(f"ERROR lista: {e}")
 
-
 # ============================================================
 # CZŁONKOWIE SERWERA — NOWA FUNKCJA
 # ============================================================
@@ -182,7 +181,6 @@ async def sync_members():
     except Exception as e:
         print(f"ERROR członkowie: {type(e).__name__}: {e}")
 
-
 # ============================================================
 # ARCHIWUM UTWORÓW — NOWA FUNKCJA
 # ============================================================
@@ -191,7 +189,7 @@ async def sync_archiwum():
     try:
         print("ARCHIWUM: rozpoczynam pobieranie historii kanału...")
 
-        cid = int(os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID"))
+        cid = 1518213312234655825
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
 
         entries = []
@@ -330,7 +328,6 @@ async def sync_archiwum():
             f"{type(e).__name__}: {e}"
         )
 
-
 # ============================================================
 # START
 # ============================================================
@@ -349,7 +346,6 @@ async def on_ready():
     print("TEST: START sync_archiwum()")
     await sync_archiwum()
     print("TEST: KONIEC sync_archiwum()")
-
 
 # ============================================================
 # BOT
