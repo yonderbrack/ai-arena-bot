@@ -1,4 +1,3 @@
-
 import os
 import json
 import base64
@@ -126,6 +125,90 @@ async def check_lista():
         print(f"ERROR lista: {e}")
         import traceback; traceback.print_exc()
 
+
+# ============================================================
+# LINKI DO GŁOSOWANIA — NOWE - ZMIENIA SIĘ RAZEM Z LISTĄ
+# Kanał #linki-do-glosowania - ID 1517609248765382776 z Twojego screena
+# ============================================================
+
+@tasks.loop(seconds=60)
+async def check_glosowanie_link():
+    try:
+        # ID kanału #linki-do-glosowania - możesz nadpisać ENV GLOSOWANIE_CHANNEL_ID
+        cid_raw = os.getenv("GLOSOWANIE_CHANNEL_ID") or os.getenv("LINKI_CHANNEL_ID") or "1517609248765382776"
+        if not cid_raw:
+            return
+        cid = int(cid_raw)
+        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        if ch is None:
+            # print tylko raz żeby nie spamować
+            print(f"GLOSOWANIE: nie znaleziono kanału {cid}")
+            return
+
+        # Regex na Google Forms / Sheets - z Twojego screena: https://forms.gle/HpmeGTc6tCqZKvqM7
+        # Obsługuje forms.gle, docs.google.com/forms, docs.google.com/spreadsheets, forms.google.com
+        link_pattern = re.compile(
+            r"https?://(?:forms\.gle|docs\.google\.com/(?:forms|spreadsheets)/|forms\.google\.com|forms\.office\.com|docs\.google\.com/forms)/[^\s\)\]\<\>\"']+",
+            re.IGNORECASE
+        )
+
+        found_link = None
+        found_msg_id = None
+        found_msg_date = None
+
+        async for msg in ch.history(limit=20):
+            if not msg.content:
+                continue
+            m = link_pattern.search(msg.content)
+            if m:
+                # wyczyść link z końcowych znaków interpunkcyjnych
+                raw_link = m.group(0).rstrip(").,!;")
+                found_link = raw_link
+                found_msg_id = str(msg.id)
+                found_msg_date = msg.created_at
+                break  # bierzemy najnowszy
+
+        if not found_link:
+            print("GLOSOWANIE: nie znaleziono linka w ostatnich 20 wiadomościach")
+            return
+
+        # Sprawdź czy link już jest zapisany - żeby nie nadpisywać bez potrzeby
+        doc_ref = db.collection("config").document("glosowanie")
+        current_doc = doc_ref.get()
+        current_link = ""
+        if current_doc.exists:
+            current_link = current_doc.to_dict().get("glosuj_link", "") or ""
+
+        if current_link == found_link:
+            # print(f"GLOSOWANIE: link bez zmian {found_link}")
+            return
+
+        # Zapisz do Firebase - tego słucha apka w GlosujTab
+        doc_ref.set({
+            "glosuj_link": found_link,
+            "glosujLink": found_link,  # alias dla kompatybilności
+            "link_glosuj": found_link,  # alias dla kompatybilności
+            "glosuj_link_updated_at": firestore.SERVER_TIMESTAMP,
+            "source_message_id": found_msg_id,
+            "source_channel_id": str(cid),
+            "source_channel_name": "linki-do-glosowania",
+            "updated_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+
+        # Fallback dla starej apki - config/glosuj
+        try:
+            db.collection("config").document("glosuj").set({
+                "link": found_link,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+        except Exception:
+            pass
+
+        print(f"GLOSOWANIE: ZAPISANO NOWY LINK {found_link} z msg {found_msg_id} ({found_msg_date})")
+
+    except Exception as e:
+        print(f"ERROR glosowanie_link: {e}")
+        import traceback; traceback.print_exc()
 
 
 async def sync_members():
@@ -754,7 +837,7 @@ async def on_message(message):
                 }, merge=True)
 
                 await message.author.send(
-                    "❌ Nie znaleziono Twojego konta w bazie.\n\n"
+                    "❌ Nie znalazłem Twojego konta w bazie.\n\n"
                     "Skontaktuj się z organizatorem."
                 )
                 return
@@ -914,7 +997,7 @@ async def odzyskaj_test(ctx):
 
 
 # ============================================================
-# START - BEZ ZMIAN
+# START - DODANY check_glosowanie_link
 # ============================================================
 
 @bot.event
@@ -927,6 +1010,9 @@ async def on_ready():
 
     if not check_lista.is_running():
         check_lista.start()
+
+    if not check_glosowanie_link.is_running():
+        check_glosowanie_link.start()
 
     if not check_recovery_requests.is_running():
         check_recovery_requests.start()
@@ -953,6 +1039,10 @@ async def on_ready():
 
     print(
         "RECOVERY: system odzyskiwania PIN aktywny"
+    )
+
+    print(
+        "GLOSOWANIE: system linków do głosowania aktywny - kanał 1517609248765382776"
     )
 
 
