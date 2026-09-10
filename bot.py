@@ -13,112 +13,107 @@ from discord.ext import commands, tasks
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+
+# ============================================================
+# FIREBASE
+# ============================================================
+
 b64 = os.getenv("FIREBASE_B64")
 cred_dict = json.loads(base64.b64decode(b64).decode("utf-8"))
 cred = credentials.Certificate(cred_dict)
+
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
+
 db = firestore.client()
+
+
+# ============================================================
+# DISCORD
+# ============================================================
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
+
+
+# ============================================================
+# USTAWIENIA ODZYSKIWANIA PIN
+# ============================================================
 
 RECOVERY_TIMEOUT_MINUTES = 10
 RECOVERY_COLLECTION = "pin_recovery"
 
-def hash_pin(pin: str) -> str:
-    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
 # ============================================================
-# LISTA UTWORÓW — NAPRAWIONE DLA NIENUMEROWANYCH
+# POMOCNICZE — HASH PIN
+# MUSI BYĆ IDENTYCZNY JAK W ANDROIDZIE
 # ============================================================
+
+def hash_pin(pin: str) -> str:
+    return hashlib.sha256(
+        pin.encode("utf-8")
+    ).hexdigest()
+
+
+# ============================================================
+# LISTA UTWORÓW — NAPRAWIONE, DZIAŁA JAK KIEDYŚ OD RAZU
+# ============================================================
+
 WARSAW = ZoneInfo("Europe/Warsaw")
 
-@tasks.loop(minutes=2)
+@tasks.loop(seconds=30)
 async def check_lista():
     now = datetime.now(WARSAW)
     is_active_day = now.weekday() in [1, 2, 3]
     if not is_active_day:
-        print(f"[{now.strftime('%a %H:%M %Z')}] Nie wt/sr/czw - spie do wtorku")
         return
     try:
-        print(f"[{now}] WT/SR/CZW - sprawdzam liste...")
+        print(f"[{now.strftime('%H:%M:%S')}] WT/SR/CZW - sprawdzam liste...")
         cid_raw = os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID")
         if not cid_raw:
-            print("ERROR lista: Brak CHANNEL_ID w env")
+            print("ERROR lista: Brak CHANNEL_ID")
             return
         cid = int(cid_raw)
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         if ch is None:
             print(f"ERROR lista: nie znaleziono kanału {cid}")
             return
-
-        all_lines = []
-        async for msg in ch.history(limit=200):
+        async for msg in ch.history(limit=50):
             if not msg.content:
                 continue
+            lines_with_numbers = []
             for raw in msg.content.split("\n"):
                 raw = raw.strip()
                 if not raw:
                     continue
-                low = raw.upper()
-                if low.startswith("TOP 10") or "LISTA PRZEBOJÓW" in low or "GŁOSOWANIE" in low or "WIELKI FINAŁ" in low:
-                    continue
-                if raw.startswith("🏆") or "Twoja muzyczna władza" in raw:
-                    continue
-                # musi mieć link
-                if not re.search(r"https?://\S+", raw):
-                    continue
-                tmp = re.sub(r"https?://\S+", "", raw).strip()
-                tmp = re.sub(r"^\d+[\.\)]?\s*", "", tmp).strip()
-                if len(tmp.split()) >= 2:
-                    all_lines.append(raw)
-
-        # history jest od najnowszych, odwracamy żeby zachować kolejność jak na Discordzie
-        all_lines = list(reversed(all_lines))
-
-        uniq = {}
-        deduped = []
-        for line in all_lines:
-            no_link = re.sub(r"https?://\S+", "", line).strip()
-            no_link = re.sub(r"^\d+[\.\)]?\s*", "", no_link).strip()
-            key = re.sub(r"\s+", " ", no_link).lower()
-            if key not in uniq:
-                uniq[key] = True
-                deduped.append(line)
-
-        if len(deduped) > 40:
-            deduped = deduped[-40:]
-
-        print(f"Znaleziono {len(all_lines)} linii z linkami, po dedup {len(deduped)}")
-        if deduped:
-            print(f"Przykład: {deduped[:3]}")
-
-        if len(deduped) >= 5:
-            # ZAPIS PONUMEROWANY - żeby w Firestore też było 1. 2. 3.
-            ponumerowane = []
-            for i, line in enumerate(deduped, start=1):
-                czysta = re.sub(r"^\d+[\.\)]?\s*", "", line).strip()
-                ponumerowane.append(f"{i}. {czysta}")
-
-            db.collection("lista").document("aktualna").set({
-                "utwory": ponumerowane,
-                "count": len(ponumerowane),
-                "updated_at": firestore.SERVER_TIMESTAMP,
-                "updated_day": now.strftime("%A %H:%M")
-            })
-            print(f"ZAPISANO {len(ponumerowane)} do lista/aktualna - PONUMEROWANE!")
-
-
+                if re.match(r"^\d+[\.\)]?\s+", raw) and re.search(r"https?://\S+", raw):
+                    lines_with_numbers.append(raw)
+            if len(lines_with_numbers) >= 5:
+                def get_num(line):
+                    m = re.match(r"^\s*(\d+)", line)
+                    return int(m.group(1)) if m else 999
+                lines_with_numbers.sort(key=get_num)
+                print(f"Znalazlem ponumerowana liste: {len(lines_with_numbers)}")
+                db.collection("lista").document("aktualna").set({
+                    "utwory": lines_with_numbers,
+                    "count": len(lines_with_numbers),
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                    "updated_day": now.strftime("%A %H:%M:%S")
+                })
+                print(f"ZAPISANO {len(lines_with_numbers)} ponumerowanych")
+                return
+        print("Nie znaleziono ponumerowanej listy")
     except Exception as e:
         print(f"ERROR lista: {e}")
         import traceback; traceback.print_exc()
 
-# ============================================================
-# CZŁONKOWIE SERWERA — ISTNIEJĄCY MECHANIZM - BEZ ZMIAN
-# ============================================================
+
 
 async def sync_members():
     try:
