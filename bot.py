@@ -1,9 +1,11 @@
+
 import os
 import json
 import base64
 import hashlib
 import re
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
@@ -11,135 +13,111 @@ from discord.ext import commands, tasks
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-
-# ============================================================
-# FIREBASE
-# ============================================================
-
 b64 = os.getenv("FIREBASE_B64")
 cred_dict = json.loads(base64.b64decode(b64).decode("utf-8"))
 cred = credentials.Certificate(cred_dict)
-
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
-
 db = firestore.client()
-
-
-# ============================================================
-# DISCORD
-# ============================================================
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
-)
-
-
-# ============================================================
-# USTAWIENIA ODZYSKIWANIA PIN
-# ============================================================
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 RECOVERY_TIMEOUT_MINUTES = 10
 RECOVERY_COLLECTION = "pin_recovery"
 
-
-# ============================================================
-# POMOCNICZE — HASH PIN
-# MUSI BYĆ IDENTYCZNY JAK W ANDROIDZIE
-# ============================================================
-
 def hash_pin(pin: str) -> str:
-    return hashlib.sha256(
-        pin.encode("utf-8")
-    ).hexdigest()
-
+    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
 # ============================================================
-# LISTA UTWORÓW — ISTNIEJĄCY MECHANIZM, BEZ ZMIAN
+# LISTA UTWORÓW — NAPRAWIONE DLA NIENUMEROWANYCH
 # ============================================================
+WARSAW = ZoneInfo("Europe/Warsaw")
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=2)
 async def check_lista():
-    now = datetime.now()
-
+    now = datetime.now(WARSAW)
     is_active_day = now.weekday() in [1, 2, 3]
-
     if not is_active_day:
-        print(
-            f"[{now.strftime('%a %H:%M')}] "
-            f"Nie wt/sr/czw - spie do wtorku"
-        )
+        print(f"[{now.strftime('%a %H:%M %Z')}] Nie wt/sr/czw - spie do wtorku")
         return
-
     try:
-        print(
-            f"[{now}] WT/SR/CZW - sprawdzam liste..."
-        )
-
-        cid = int(
-            os.getenv("CHANNEL_ID")
-            or os.getenv("LISTA_CHANNEL_ID")
-        )
-
+        print(f"[{now}] WT/SR/CZW - sprawdzam liste...")
+        cid_raw = os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID")
+        if not cid_raw:
+            print("ERROR lista: Brak CHANNEL_ID w env")
+            return
+        cid = int(cid_raw)
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        if ch is None:
+            print(f"ERROR lista: nie znaleziono kanału {cid}")
+            return
 
         all_lines = []
-
         async for msg in ch.history(limit=200):
             if not msg.content:
                 continue
-
             for raw in msg.content.split("\n"):
                 raw = raw.strip()
-
                 if not raw:
                     continue
-
-                if re.match(r"^\d+[\.\)]?\s*", raw):
+                low = raw.upper()
+                if low.startswith("TOP 10") or "LISTA PRZEBOJÓW" in low or "GŁOSOWANIE" in low or "WIELKI FINAŁ" in low:
+                    continue
+                if raw.startswith("🏆") or "Twoja muzyczna władza" in raw:
+                    continue
+                # musi mieć link
+                if not re.search(r"https?://\S+", raw):
+                    continue
+                tmp = re.sub(r"https?://\S+", "", raw).strip()
+                tmp = re.sub(r"^\d+[\.\)]?\s*", "", tmp).strip()
+                if len(tmp.split()) >= 2:
                     all_lines.append(raw)
 
+        # history jest od najnowszych, odwracamy żeby zachować kolejność jak na Discordzie
+        all_lines = list(reversed(all_lines))
+
         uniq = {}
-
+        deduped = []
         for line in all_lines:
-            m = re.match(r"^\s*(\d+)", line)
+            no_link = re.sub(r"https?://\S+", "", line).strip()
+            no_link = re.sub(r"^\d+[\.\)]?\s*", "", no_link).strip()
+            key = re.sub(r"\s+", " ", no_link).lower()
+            if key not in uniq:
+                uniq[key] = True
+                deduped.append(line)
 
-            if m:
-                uniq[int(m.group(1))] = line
+        if len(deduped) > 40:
+            deduped = deduped[-40:]
 
-        sorted_list = [
-            uniq[k]
-            for k in sorted(uniq.keys())
-        ]
+        print(f"Znaleziono {len(all_lines)} linii z linkami, po dedup {len(deduped)}")
+        if deduped:
+            print(f"Przykład: {deduped[:3]}")
 
-        print(
-            f"Znaleziono {len(all_lines)} linii, "
-            f"unikalnych {len(sorted_list)}"
-        )
+        if len(deduped) >= 5:
+            # ZAPIS PONUMEROWANY - żeby w Firestore też było 1. 2. 3.
+            ponumerowane = []
+            for i, line in enumerate(deduped, start=1):
+                czysta = re.sub(r"^\d+[\.\)]?\s*", "", line).strip()
+                ponumerowane.append(f"{i}. {czysta}")
 
-        if len(sorted_list) >= 1:
             db.collection("lista").document("aktualna").set({
-                "utwory": sorted_list,
-                "count": len(sorted_list),
+                "utwory": ponumerowane,
+                "count": len(ponumerowane),
                 "updated_at": firestore.SERVER_TIMESTAMP,
-                "updated_day": "wtorek-sroda-czwartek"
+                "updated_day": now.strftime("%A %H:%M")
             })
+            print(f"ZAPISANO {len(ponumerowane)} do lista/aktualna - PONUMEROWANE!")
 
-            print(
-                f"ZAPISANO {len(sorted_list)} do "
-                f"lista/aktualna - WT/SR/CZW"
-            )
 
     except Exception as e:
         print(f"ERROR lista: {e}")
-
+        import traceback; traceback.print_exc()
 
 # ============================================================
-# CZŁONKOWIE SERWERA — ISTNIEJĄCY MECHANIZM
+# CZŁONKOWIE SERWERA — ISTNIEJĄCY MECHANIZM - BEZ ZMIAN
 # ============================================================
 
 async def sync_members():
@@ -230,7 +208,7 @@ async def sync_members():
 
 
 # ============================================================
-# ARCHIWUM UTWORÓW — ISTNIEJĄCY MECHANIZM
+# ARCHIWUM UTWORÓW — ISTNIEJĄCY MECHANIZM - BEZ ZMIAN
 # ============================================================
 
 async def sync_archiwum():
@@ -384,7 +362,7 @@ async def sync_archiwum():
 
 
 # ============================================================
-# ODZYSKIWANIE PIN — UTWORZENIE ŻĄDANIA
+# ODZYSKIWANIE PIN — UTWORZENIE ŻĄDANIA - BEZ ZMIAN
 # ============================================================
 
 async def create_recovery_request(
@@ -478,7 +456,7 @@ async def create_recovery_request(
 
 
 # ============================================================
-# ODZYSKIWANIE PIN — SPRAWDZENIE ŻĄDANIA Z FIREBASE
+# ODZYSKIWANIE PIN — SPRAWDZENIE ŻĄDANIA Z FIREBASE - BEZ ZMIAN
 # ============================================================
 
 @tasks.loop(seconds=5)
@@ -543,7 +521,7 @@ async def check_recovery_requests():
 
 
 # ============================================================
-# ODZYSKIWANIE PIN — OBSŁUGA WIADOMOŚCI PRYWATNYCH
+# ODZYSKIWANIE PIN — OBSŁUGA WIADOMOŚCI PRYWATNYCH - BEZ ZMIAN
 # ============================================================
 
 @bot.event
@@ -838,7 +816,7 @@ async def on_message(message):
 
 
 # ============================================================
-# TEST ODZYSKIWANIA PIN
+# TEST ODZYSKIWANIA PIN - BEZ ZMIAN
 # ============================================================
 
 @bot.command(name="odzyskaj_test")
@@ -850,10 +828,6 @@ async def odzyskaj_test(ctx):
         f"RECOVERY TEST: rozpoczęto dla "
         f"{ctx.author} ({discord_id})"
     )
-
-    # ========================================================
-    # SPRAWDZAMY USERS
-    # ========================================================
 
     user_ref = (
         db.collection("users")
@@ -909,10 +883,6 @@ async def odzyskaj_test(ctx):
 
         return
 
-    # ========================================================
-    # TWORZYMY ŻĄDANIE
-    # ========================================================
-
     success = await create_recovery_request(
         int(discord_id),
         nick,
@@ -936,7 +906,7 @@ async def odzyskaj_test(ctx):
 
 
 # ============================================================
-# START
+# START - BEZ ZMIAN
 # ============================================================
 
 @bot.event
@@ -944,7 +914,7 @@ async def on_ready():
 
     print(
         f"READY {bot.user} - "
-        f"tryb WT/SR/CZW 00:00-23:59"
+        f"tryb WT/SR/CZW 00:00-23:59 (Warszawa)"
     )
 
     if not check_lista.is_running():
@@ -985,3 +955,4 @@ async def on_ready():
 bot.run(
     os.getenv("DISCORD_TOKEN")
 )
+
