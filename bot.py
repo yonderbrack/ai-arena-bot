@@ -553,20 +553,18 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # ========================================================
-    # TESTOWA KOMENDA
-    # !odzyskaj_test
-    # ========================================================
-
+    # Wiadomości na serwerze -> normalne komendy
     if message.guild is not None:
         await bot.process_commands(message)
         return
 
     # ========================================================
-    # TYLKO WIADOMOŚCI PRYWATNE
+    # DM - BOT AUTOMATYCZNIE WIE, KTO PISZE
     # ========================================================
 
     discord_id = str(message.author.id)
+    content = message.content.strip()
+    content_lower = content.lower()
 
     recovery_ref = (
         db.collection(RECOVERY_COLLECTION)
@@ -575,12 +573,109 @@ async def on_message(message):
 
     recovery_doc = recovery_ref.get()
 
+    # --------------------------------------------------------
+    # BRAK AKTYWNEGO ŻĄDANIA:
+    # "odzyskaj PIN" rozpoczyna odzyskiwanie
+    # --------------------------------------------------------
+
     if not recovery_doc.exists:
-        await bot.process_commands(message)
+        if (
+            "odzyskaj pin" in content_lower
+            or "odzyskaj_pin" in content_lower
+            or content_lower in ("odzyskaj", "!odzyskaj", "!odzyskaj_pin")
+            or "nie pamiętam pin" in content_lower
+            or "nie pamietam pin" in content_lower
+        ):
+            user_ref = (
+                db.collection("users")
+                .document(discord_id)
+            )
+
+            user_doc = user_ref.get()
+
+            if not user_doc.exists:
+                await message.author.send(
+                    "❌ Nie znalazłem konta AI Arena FM "
+                    "przypisanego do tego konta Discord."
+                )
+                print(
+                    f"RECOVERY: brak users/{discord_id}"
+                )
+                return
+
+            user_data = user_doc.to_dict()
+
+            stored_discord_id = str(
+                user_data.get("discordId")
+                or user_data.get("discord_id")
+                or ""
+            )
+
+            nick = str(
+                user_data.get("nick")
+                or ""
+            ).strip()
+
+            # Jeżeli konto istnieje, ale nie ma jeszcze Discord ID,
+            # nie pozwalamy przypadkowo przejąć konta.
+            if stored_discord_id != discord_id:
+                await message.author.send(
+                    "❌ To konto AI Arena FM nie jest jeszcze "
+                    "przypisane do tego konta Discord. "
+                    "Skontaktuj się z organizatorem."
+                )
+                print(
+                    f"RECOVERY SECURITY: discordId mismatch "
+                    f"users/{discord_id}"
+                )
+                return
+
+            if not nick:
+                await message.author.send(
+                    "❌ Konto nie posiada nicku. "
+                    "Skontaktuj się z organizatorem."
+                )
+                return
+
+            now = datetime.now(timezone.utc)
+            expires = now + timedelta(
+                minutes=RECOVERY_TIMEOUT_MINUTES
+            )
+
+            recovery_ref.set({
+                "discordId": discord_id,
+                "nick": nick,
+                "status": "WAITING_CONFIRMATION",
+                "source": "discord_dm",
+                "createdAt": firestore.SERVER_TIMESTAMP,
+                "expiresAt": expires
+            })
+
+            await message.author.send(
+                "🔐 **AI ARENA FM — ODZYSKIWANIE PIN-U**\n\n"
+                f"Znalazłem konto **{nick}** przypisane do tego "
+                "konta Discord.\n\n"
+                "Jeśli to Ty chcesz zmienić PIN, odpowiedz:\n\n"
+                "**TAK**\n\n"
+                "Jeśli nie prosiłeś o zmianę PIN-u, zignoruj "
+                "tę wiadomość."
+            )
+
+            print(
+                f"RECOVERY: rozpoczęto przez DM dla "
+                f"{message.author} ({discord_id})"
+            )
+            return
+
+        await message.author.send(
+            "👋 Cześć!\n\n"
+            "Jeśli chcesz odzyskać PIN do AI Arena FM, "
+            "napisz:\n\n"
+            "**odzyskaj PIN**"
+        )
         return
 
     recovery = recovery_doc.to_dict()
-
     status = recovery.get("status")
 
     # ========================================================
@@ -590,7 +685,6 @@ async def on_message(message):
     expires_at = recovery.get("expiresAt")
 
     if expires_at is not None:
-
         try:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(
@@ -598,7 +692,6 @@ async def on_message(message):
                 )
 
             if datetime.now(timezone.utc) > expires_at:
-
                 recovery_ref.set({
                     "status": "EXPIRED",
                     "expiredAt": firestore.SERVER_TIMESTAMP
@@ -606,10 +699,9 @@ async def on_message(message):
 
                 await message.author.send(
                     "⏰ Żądanie odzyskania PIN-u wygasło.\n\n"
-                    "Uruchom odzyskiwanie PIN-u "
-                    "jeszcze raz w aplikacji."
+                    "Napisz ponownie **odzyskaj PIN**, "
+                    "aby rozpocząć procedurę."
                 )
-
                 return
 
         except Exception as e:
@@ -624,36 +716,25 @@ async def on_message(message):
 
     if status == "WAITING_CONFIRMATION":
 
-        answer = message.content.strip().upper()
+        answer = content.upper()
 
         if answer == "TAK":
-
             recovery_ref.set({
                 "status": "WAITING_NEW_PIN",
                 "confirmedAt": firestore.SERVER_TIMESTAMP
             }, merge=True)
 
             await message.author.send(
-                "✅ Potwierdzone.\n\n"
+                "✅ **Potwierdzone.**\n\n"
                 "Podaj teraz **nowy PIN**.\n"
-                "PIN musi zawierać od **4 do 6 cyfr**.\n\n"
-                "Nie wysyłaj tutaj żadnych innych danych."
+                "PIN musi zawierać od **4 do 6 cyfr**."
             )
-
-            print(
-                f"RECOVERY: {discord_id} "
-                f"potwierdził odzyskiwanie PIN"
-            )
-
             return
 
-        # Wszystko inne ignorujemy
         await message.author.send(
-            "Aby potwierdzić utworzenie nowego PIN-u, "
-            "odpowiedz dokładnie:\n\n"
+            "Aby potwierdzić zmianę PIN-u, odpowiedz dokładnie:\n\n"
             "**TAK**"
         )
-
         return
 
     # ========================================================
@@ -662,26 +743,17 @@ async def on_message(message):
 
     if status == "WAITING_NEW_PIN":
 
-        new_pin = message.content.strip()
+        new_pin = content
 
-        # PIN tylko 4–6 cyfr
         if not re.fullmatch(r"\d{4,6}", new_pin):
-
             await message.author.send(
                 "❌ Nieprawidłowy PIN.\n\n"
-                "PIN musi zawierać wyłącznie "
-                "od **4 do 6 cyfr**.\n\n"
+                "PIN musi zawierać wyłącznie od **4 do 6 cyfr**.\n"
                 "Spróbuj ponownie."
             )
-
             return
 
         try:
-            # =================================================
-            # WAŻNE:
-            # AKTUALIZUJEMY USERS PO DISCORD ID
-            # =================================================
-
             user_ref = (
                 db.collection("users")
                 .document(discord_id)
@@ -690,62 +762,43 @@ async def on_message(message):
             user_doc = user_ref.get()
 
             if not user_doc.exists:
-
                 recovery_ref.set({
                     "status": "ERROR",
-                    "error": "Nie znaleziono users/{discordId}"
+                    "error": "Nie znaleziono konta users"
                 }, merge=True)
 
                 await message.author.send(
-                    "❌ Nie znaleziono Twojego konta "
-                    "w bazie użytkowników.\n\n"
+                    "❌ Nie znaleziono Twojego konta w bazie.\n\n"
                     "Skontaktuj się z organizatorem."
                 )
-
-                print(
-                    f"RECOVERY ERROR: "
-                    f"brak users/{discord_id}"
-                )
-
                 return
 
             user_data = user_doc.to_dict()
 
             stored_discord_id = str(
                 user_data.get("discordId")
+                or user_data.get("discord_id")
                 or ""
             )
 
-            # Dodatkowa kontrola bezpieczeństwa
             if stored_discord_id != discord_id:
-
                 recovery_ref.set({
                     "status": "ERROR",
                     "error": "Niezgodność discordId"
                 }, merge=True)
 
                 await message.author.send(
-                    "❌ Nie udało się zweryfikować "
-                    "Twojego konta.\n\n"
+                    "❌ Nie udało się zweryfikować Twojego konta.\n\n"
                     "Skontaktuj się z organizatorem."
                 )
-
-                print(
-                    f"RECOVERY SECURITY ERROR: "
-                    f"discordId mismatch "
-                    f"{discord_id}"
-                )
-
                 return
-
-            # =================================================
-            # ZAPIS HASHU PIN
-            # =================================================
 
             new_hash = hash_pin(new_pin)
 
+            # Zachowujemy nazwę pola używaną przez aplikację.
             user_ref.set({
-                "pinHash": new_hash
+                "pinHash": new_hash,
+                "updatedAt": firestore.SERVER_TIMESTAMP
             }, merge=True)
 
             recovery_ref.set({
@@ -753,26 +806,19 @@ async def on_message(message):
                 "completedAt": firestore.SERVER_TIMESTAMP
             }, merge=True)
 
-            # =================================================
-            # WIADOMOŚĆ KOŃCOWA
-            # =================================================
-
             await message.author.send(
                 "✅ **PIN został zmieniony.**\n\n"
-                "Możesz teraz zalogować się w "
-                "aplikacji AI Arena FM przy użyciu "
-                "nowego PIN-u."
+                "Możesz teraz zalogować się w aplikacji "
+                "AI Arena FM przy użyciu nowego PIN-u."
             )
 
             print(
                 f"RECOVERY: PIN zmieniony dla "
                 f"discordId={discord_id}"
             )
-
             return
 
         except Exception as e:
-
             print(
                 f"ERROR ustawiania nowego PIN: "
                 f"{type(e).__name__}: {e}"
@@ -782,10 +828,13 @@ async def on_message(message):
                 "❌ Wystąpił błąd podczas zmiany PIN-u.\n\n"
                 "Spróbuj ponownie później."
             )
-
             return
 
-    await bot.process_commands(message)
+    # Po zakończonym/nieznanym stanie
+    await message.author.send(
+        "Jeśli chcesz rozpocząć odzyskiwanie PIN-u, "
+        "napisz **odzyskaj PIN**."
+    )
 
 
 # ============================================================
