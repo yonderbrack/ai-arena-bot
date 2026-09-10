@@ -612,7 +612,7 @@ async def check_recovery_requests():
 
 
 # ============================================================
-# ODZYSKIWANIE PIN — OBSŁUGA WIADOMOŚCI PRYWATNYCH - BEZ ZMIAN
+# ODZYSKIWANIE PIN — OBSŁUGA WIADOMOŚCI PRYWATNYCH - FIX PĘTLI
 # ============================================================
 
 @bot.event
@@ -748,10 +748,11 @@ async def on_message(message):
     status = recovery.get("status")
 
     # ========================================================
-    # SPRAWDZENIE CZASU WAŻNOŚCI
+    # SPRAWDZENIE CZASU WAŻNOŚCI - FIX PĘTLI EXPIRED
     # ========================================================
 
     expires_at = recovery.get("expiresAt")
+    is_expired = False
 
     if expires_at is not None:
         try:
@@ -761,6 +762,99 @@ async def on_message(message):
                 )
 
             if datetime.now(timezone.utc) > expires_at:
+                is_expired = True
+
+        except Exception as e:
+            print(
+                f"RECOVERY: błąd sprawdzania "
+                f"wygaśnięcia: {e}"
+            )
+
+    # Jeśli wygasło lub jest w stanie końcowym - pozwól zrestartować przez "odzyskaj PIN"
+    if is_expired or status in ("EXPIRED", "DONE", "ERROR", "DM_FAILED"):
+        if (
+            "odzyskaj pin" in content_lower
+            or "odzyskaj_pin" in content_lower
+            or content_lower in ("odzyskaj", "!odzyskaj", "!odzyskaj_pin")
+            or "nie pamiętam pin" in content_lower
+            or "nie pamietam pin" in content_lower
+        ):
+            try:
+                recovery_ref.delete()
+            except Exception:
+                pass
+
+            # utwórz nowy request od zera
+            user_ref = (
+                db.collection("users")
+                .document(discord_id)
+            )
+            user_doc = user_ref.get()
+
+            if not user_doc.exists:
+                await message.author.send(
+                    "❌ Nie znalazłem konta AI Arena FM "
+                    "przypisanego do tego konta Discord."
+                )
+                return
+
+            user_data = user_doc.to_dict()
+            stored_discord_id = str(
+                user_data.get("discordId")
+                or user_data.get("discord_id")
+                or ""
+            )
+            nick = str(
+                user_data.get("nick")
+                or ""
+            ).strip()
+
+            if stored_discord_id != discord_id:
+                await message.author.send(
+                    "❌ To konto AI Arena FM nie jest jeszcze "
+                    "przypisane do tego konta Discord. "
+                    "Skontaktuj się z organizatorem."
+                )
+                return
+
+            if not nick:
+                await message.author.send(
+                    "❌ Konto nie posiada nicku. "
+                    "Skontaktuj się z organizatorem."
+                )
+                return
+
+            now = datetime.now(timezone.utc)
+            expires = now + timedelta(
+                minutes=RECOVERY_TIMEOUT_MINUTES
+            )
+
+            recovery_ref.set({
+                "discordId": discord_id,
+                "nick": nick,
+                "status": "WAITING_CONFIRMATION",
+                "source": "discord_dm",
+                "createdAt": firestore.SERVER_TIMESTAMP,
+                "expiresAt": expires
+            })
+
+            await message.author.send(
+                "🔐 **AI ARENA FM — ODZYSKIWANIE PIN-U**\n\n"
+                f"Znalazłem konto **{nick}** przypisane do tego "
+                "konta Discord.\n\n"
+                "Jeśli to Ty chcesz zmienić PIN, odpowiedz:\n\n"
+                "**TAK**\n\n"
+                "Jeśli nie prosiłeś o zmianę PIN-u, zignoruj "
+                "tę wiadomość."
+            )
+
+            print(
+                f"RECOVERY: RESTART po {status}/expired dla "
+                f"{message.author} ({discord_id})"
+            )
+            return
+        else:
+            if is_expired:
                 recovery_ref.set({
                     "status": "EXPIRED",
                     "expiredAt": firestore.SERVER_TIMESTAMP
@@ -772,12 +866,6 @@ async def on_message(message):
                     "aby rozpocząć procedurę."
                 )
                 return
-
-        except Exception as e:
-            print(
-                f"RECOVERY: błąd sprawdzania "
-                f"wygaśnięcia: {e}"
-            )
 
     # ========================================================
     # POTWIERDZENIE — TAK
