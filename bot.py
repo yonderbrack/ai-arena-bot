@@ -74,41 +74,54 @@ async def check_lista():
     if not is_active_day:
         return
     try:
-        print(f"[{now.strftime('%H:%M:%S')}] WT/SR/CZW - sprawdzam liste...")
         cid_raw = os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID")
         if not cid_raw:
-            print("ERROR lista: Brak CHANNEL_ID")
             return
         cid = int(cid_raw)
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         if ch is None:
-            print(f"ERROR lista: nie znaleziono kanału {cid}")
             return
-        async for msg in ch.history(limit=50):
+
+        # SKLEJA WSZYSTKIE PONUMEROWANE Z OSTATNICH 100 WIADOMOSCI - 1-20 + 21-40
+        numbered = {}  # numer -> linia
+        async for msg in ch.history(limit=100):
             if not msg.content:
                 continue
-            lines_with_numbers = []
             for raw in msg.content.split("\n"):
                 raw = raw.strip()
                 if not raw:
                     continue
-                if re.match(r"^\d+[\.\)]?\s+", raw) and re.search(r"https?://\S+", raw):
-                    lines_with_numbers.append(raw)
-            if len(lines_with_numbers) >= 5:
-                def get_num(line):
-                    m = re.match(r"^\s*(\d+)", line)
-                    return int(m.group(1)) if m else 999
-                lines_with_numbers.sort(key=get_num)
-                print(f"Znalazlem ponumerowana liste: {len(lines_with_numbers)}")
-                db.collection("lista").document("aktualna").set({
-                    "utwory": lines_with_numbers,
-                    "count": len(lines_with_numbers),
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                    "updated_day": now.strftime("%A %H:%M:%S")
-                })
-                print(f"ZAPISANO {len(lines_with_numbers)} ponumerowanych")
-                return
-        print("Nie znaleziono ponumerowanej listy")
+                m = re.match(r"^\s*(\d+)\s*[\.\)]?\s*(.+)", raw)
+                if not m:
+                    continue
+                if not re.search(r"https?://\S+", raw):
+                    continue
+                num = int(m.group(1))
+                if num < 1 or num > 100:
+                    continue
+                # bierzemy pierwsze wystapienie numeru (najnowsza wiadomosc)
+                if num not in numbered:
+                    numbered[num] = raw.strip()
+
+        if len(numbered) < 5:
+            print("Nie znaleziono min 5 ponumerowanych")
+            return
+
+        # posortuj po numerze 1,2,3...40
+        sorted_nums = sorted(numbered.keys())
+        final_list = [numbered[n] for n in sorted_nums]
+
+        # jesli jest luka np 1-20 i 21-40 to mamy 40, jesli tylko 1-20 to 20
+        print(f"Znalazlem ponumerowane numery: {sorted_nums[:5]}...{sorted_nums[-5:]} razem {len(final_list)}")
+        print(f"Przyklad: {final_list[:2]}")
+
+        db.collection("lista").document("aktualna").set({
+            "utwory": final_list,
+            "count": len(final_list),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "updated_day": now.strftime("%A %H:%M:%S")
+        })
+        print(f"ZAPISANO {len(final_list)} ponumerowanych 1-{sorted_nums[-1]}")
     except Exception as e:
         print(f"ERROR lista: {e}")
         import traceback; traceback.print_exc()
