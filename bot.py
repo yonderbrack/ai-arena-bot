@@ -66,6 +66,7 @@ def hash_pin(pin: str) -> str:
 
 WARSAW = ZoneInfo("Europe/Warsaw")
 
+
 @tasks.loop(seconds=30)
 async def check_lista():
     now = datetime.now(WARSAW)
@@ -123,7 +124,8 @@ async def check_lista():
         print(f"ZAPISANO {len(final_list)} ponumerowanych 1-{sorted_nums[-1]}")
     except Exception as e:
         print(f"ERROR lista: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+        traceback.print_exc()
 
 
 # ============================================================
@@ -186,8 +188,8 @@ async def check_glosowanie_link():
         # Zapisz do Firebase - tego słucha apka w GlosujTab
         doc_ref.set({
             "glosuj_link": found_link,
-            "glosujLink": found_link,  # alias dla kompatybilności
-            "link_glosuj": found_link,  # alias dla kompatybilności
+            "glosujLink": found_link,
+            "link_glosuj": found_link,
             "glosuj_link_updated_at": firestore.SERVER_TIMESTAMP,
             "source_message_id": found_msg_id,
             "source_channel_id": str(cid),
@@ -208,7 +210,248 @@ async def check_glosowanie_link():
 
     except Exception as e:
         print(f"ERROR glosowanie_link: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+        traceback.print_exc()
+
+
+# ============================================================
+# TYPY — AUTOMATYCZNE CZYSZCZENIE STARYCH TYPÓW
+#
+# NIE DOTYKA:
+# - historia
+# - Wyniki
+# - lista
+# - users
+# - czlonkowie
+# - pin_recovery
+#
+# CZYŚCI WYŁĄCZNIE:
+# - typy
+# ============================================================
+
+TYPY_SYSTEM_DOC = "_system_weekly_cleanup"
+
+
+def get_current_week_start():
+    """
+    Zwraca początek bieżącego tygodnia:
+    poniedziałek 00:00 czasu Europe/Warsaw.
+    """
+    now = datetime.now(WARSAW)
+
+    monday = (
+        now - timedelta(days=now.weekday())
+    ).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    return monday
+
+
+def cleanup_old_typy(cutoff_datetime):
+    """
+    Usuwa WYŁĄCZNIE dokumenty z kolekcji 'typy',
+    których timestamp jest starszy niż cutoff_datetime.
+
+    Dokument systemowy _system_weekly_cleanup zostaje.
+    """
+
+    try:
+        collection = db.collection("typy")
+
+        cutoff_ms = int(
+            cutoff_datetime.timestamp() * 1000
+        )
+
+        docs = list(collection.stream())
+
+        deleted_count = 0
+        skipped_count = 0
+
+        batch = db.batch()
+        batch_count = 0
+
+        for doc in docs:
+
+            # Nigdy nie usuwamy dokumentu technicznego
+            if doc.id == TYPY_SYSTEM_DOC:
+                continue
+
+            data = doc.to_dict() or {}
+
+            timestamp = data.get("timestamp")
+
+            # Jeśli dokument nie ma timestampu,
+            # NIE USUWAMY go automatycznie.
+            if timestamp is None:
+                skipped_count += 1
+                continue
+
+            try:
+                timestamp_ms = int(timestamp)
+            except (TypeError, ValueError):
+                skipped_count += 1
+                continue
+
+            # Usuwamy tylko wpisy starsze od początku
+            # bieżącego tygodnia.
+            if timestamp_ms < cutoff_ms:
+
+                batch.delete(doc.reference)
+                batch_count += 1
+                deleted_count += 1
+
+                # Firestore batch max 500 operacji.
+                # Zostawiamy bezpieczny limit 400.
+                if batch_count >= 400:
+                    batch.commit()
+
+                    batch = db.batch()
+                    batch_count = 0
+
+        if batch_count > 0:
+            batch.commit()
+
+        print(
+            f"TYPY: czyszczenie zakończone. "
+            f"Usunięto: {deleted_count}, "
+            f"pominięto bez poprawnego timestamp: {skipped_count}"
+        )
+
+        return deleted_count
+
+    except Exception as e:
+
+        print(
+            f"ERROR TYPY cleanup: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        import traceback
+        traceback.print_exc()
+
+        return 0
+
+
+@tasks.loop(seconds=30)
+async def check_typy_cleanup():
+
+    try:
+
+        now = datetime.now(WARSAW)
+
+        current_week_start = get_current_week_start()
+
+        current_week_key = current_week_start.strftime(
+            "%Y-%m-%d"
+        )
+
+        system_ref = (
+            db.collection("typy")
+            .document(TYPY_SYSTEM_DOC)
+        )
+
+        system_doc = system_ref.get()
+
+        system_data = {}
+
+        if system_doc.exists:
+            system_data = system_doc.to_dict() or {}
+
+        initialized = bool(
+            system_data.get("initialized")
+        )
+
+        cleanup_week = (
+            system_data.get("cleanup_week")
+        )
+
+        # ====================================================
+        # PIERWSZE URUCHOMIENIE
+        #
+        # Usuwamy tylko stare wpisy sprzed bieżącego
+        # tygodnia.
+        #
+        # Aktualne typy zostają.
+        # ====================================================
+
+        if not initialized:
+
+            print(
+                "TYPY: pierwsze uruchomienie systemu "
+                "czyszczenia."
+            )
+
+            deleted_count = cleanup_old_typy(
+                current_week_start
+            )
+
+            system_ref.set({
+                "initialized": True,
+                "initialized_at": firestore.SERVER_TIMESTAMP,
+                "cleanup_week": current_week_key,
+                "last_cleanup_at": firestore.SERVER_TIMESTAMP,
+                "last_deleted_count": deleted_count,
+                "description": (
+                    "Automatyczne czyszczenie starych typów. "
+                    "Dokument techniczny."
+                )
+            }, merge=True)
+
+            print(
+                f"TYPY: pierwsze czyszczenie wykonane. "
+                f"Usunięto {deleted_count} starych wpisów."
+            )
+
+            return
+
+        # ====================================================
+        # COTYGODNIOWE CZYSZCZENIE
+        #
+        # Tylko poniedziałek od 12:00.
+        # ====================================================
+
+        if now.weekday() != 0:
+            return
+
+        if now.hour < 12:
+            return
+
+        if cleanup_week == current_week_key:
+            return
+
+        print(
+            f"TYPY: rozpoczęto cotygodniowe czyszczenie "
+            f"dla tygodnia {current_week_key}."
+        )
+
+        deleted_count = cleanup_old_typy(
+            current_week_start
+        )
+
+        system_ref.set({
+            "cleanup_week": current_week_key,
+            "last_cleanup_at": firestore.SERVER_TIMESTAMP,
+            "last_deleted_count": deleted_count
+        }, merge=True)
+
+        print(
+            f"TYPY: cotygodniowe czyszczenie zakończone. "
+            f"Usunięto {deleted_count} starych wpisów."
+        )
+
+    except Exception as e:
+
+        print(
+            f"ERROR typy cleanup checker: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        import traceback
+        traceback.print_exc()
 
 
 async def sync_members():
@@ -1085,7 +1328,7 @@ async def odzyskaj_test(ctx):
 
 
 # ============================================================
-# START - DODANY check_glosowanie_link
+# START - DODANY check_glosowanie_link + check_typy_cleanup
 # ============================================================
 
 @bot.event
@@ -1101,6 +1344,9 @@ async def on_ready():
 
     if not check_glosowanie_link.is_running():
         check_glosowanie_link.start()
+
+    if not check_typy_cleanup.is_running():
+        check_typy_cleanup.start()
 
     if not check_recovery_requests.is_running():
         check_recovery_requests.start()
@@ -1133,6 +1379,10 @@ async def on_ready():
         "GLOSOWANIE: system linków do głosowania aktywny - kanał 1517609248765382776"
     )
 
+    print(
+        "TYPY: automatyczne czyszczenie starych typów aktywne"
+    )
+
 
 # ============================================================
 # BOT
@@ -1141,4 +1391,3 @@ async def on_ready():
 bot.run(
     os.getenv("DISCORD_TOKEN")
 )
-
