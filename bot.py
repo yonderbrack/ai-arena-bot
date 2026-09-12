@@ -709,7 +709,7 @@ HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
 async def sync_hall_of_fame_all():
     try:
         print(
-            "HALL OF FAME: PIERWSZE URUCHOMIENIE - ściągam WSZYSTKIE nr 1..."
+            "HALL OF FAME: PIERWSZE URUCHOMIENIE - ściągam WSZYSTKIE nr 1 + uzupełniam YouTube..."
         )
 
         cid = HALL_OF_FAME_CHANNEL_ID
@@ -727,6 +727,7 @@ async def sync_hall_of_fame_all():
 
         added = 0
         skipped = 0
+        updated = 0
 
         async for msg in ch.history(limit=None):
             if not msg.content:
@@ -763,20 +764,18 @@ async def sync_hall_of_fame_all():
             doc_id = f"{numer:03d}"
 
             doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
+            doc_snap = doc_ref.get()
 
-            if doc_ref.get().exists:
-                skipped += 1
-                continue
-
+            # SZUKAJ YOUTUBE W CAŁEJ WIADOMOŚCI, nie tylko w linii nr 1
             youtubeUrl = ""
             youtubeId = ""
 
-            urls = re.findall(
+            urls_all = re.findall(
                 r"https?://[^\s\)\]\<\>\"']+",
-                found_line
+                msg.content
             )
 
-            for u in urls:
+            for u in urls_all:
                 uc = u.rstrip(").,!;")
                 if "youtu" in uc.lower():
                     youtubeUrl = uc
@@ -787,6 +786,45 @@ async def sync_hall_of_fame_all():
                     if m_id:
                         youtubeId = m_id.group(1)
                     break
+
+            # fallback - szukaj też w samej linii nr 1
+            if not youtubeUrl:
+                urls_line = re.findall(
+                    r"https?://[^\s\)\]\<\>\"']+",
+                    found_line
+                )
+                for u in urls_line:
+                    uc = u.rstrip(").,!;")
+                    if "youtu" in uc.lower():
+                        youtubeUrl = uc
+                        m_id = re.search(
+                            r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)",
+                            uc
+                        )
+                        if m_id:
+                            youtubeId = m_id.group(1)
+                        break
+
+            if doc_snap.exists:
+                existing = doc_snap.to_dict() or {}
+                # jeśli ma już youtube to pomiń, jeśli nie ma to zaktualizuj
+                if existing.get("youtubeId") and existing.get("youtubeUrl"):
+                    skipped += 1
+                    continue
+                else:
+                    if youtubeUrl or youtubeId:
+                        doc_ref.set({
+                            "youtubeId": youtubeId,
+                            "youtubeUrl": youtubeUrl,
+                            "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        updated += 1
+                        print(
+                            f"HALL OF FAME: UZUPEŁNIONO YT dla {doc_id}: {youtubeId}"
+                        )
+                    else:
+                        skipped += 1
+                    continue
 
             clean = re.sub(
                 r"\[([^\]]+)\]\([^)]+\)",
@@ -842,7 +880,7 @@ async def sync_hall_of_fame_all():
             added += 1
 
         print(
-            f"HALL OF FAME: KONIEC pierwszego ściągania. Dodano: {added}, pominięto: {skipped}"
+            f"HALL OF FAME: KONIEC. Dodano: {added}, uzupełniono YT: {updated}, pominięto: {skipped}"
         )
 
         return added
@@ -910,22 +948,17 @@ async def sync_hall_of_fame_latest():
             doc_id = f"{numer:03d}"
 
             doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
-
-            if doc_ref.get().exists:
-                print(
-                    f"HALL OF FAME: {doc_id} już istnieje - nie ma nowego"
-                )
-                return
+            doc_snap = doc_ref.get()
 
             youtubeUrl = ""
             youtubeId = ""
 
-            urls = re.findall(
+            urls_all = re.findall(
                 r"https?://[^\s\)\]\<\>\"']+",
-                found_line
+                msg.content
             )
 
-            for u in urls:
+            for u in urls_all:
                 uc = u.rstrip(").,!;")
                 if "youtu" in uc.lower():
                     youtubeUrl = uc
@@ -936,6 +969,25 @@ async def sync_hall_of_fame_latest():
                     if m_id:
                         youtubeId = m_id.group(1)
                     break
+
+            if doc_snap.exists:
+                existing = doc_snap.to_dict() or {}
+                if existing.get("youtubeId"):
+                    print(
+                        f"HALL OF FAME: {doc_id} już istnieje - nie ma nowego"
+                    )
+                    return
+                else:
+                    if youtubeUrl:
+                        doc_snap.reference.set({
+                            "youtubeId": youtubeId,
+                            "youtubeUrl": youtubeUrl,
+                            "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        print(
+                            f"HALL OF FAME: UZUPEŁNIONO YT dla {doc_id}"
+                        )
+                    return
 
             clean = re.sub(
                 r"\[([^\]]+)\]\([^)]+\)",
