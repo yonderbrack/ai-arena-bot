@@ -546,342 +546,356 @@ async def sync_members():
 # ============================================================
 
 async def sync_archiwum():
+    """
+    ARCHIWUM — zapisuje WYŁĄCZNIE zwycięzcę (miejsce 1)
+    z każdego notowania.
+
+    Format archiwum:
+        TOP10 #123
+        1. Wykonawca - Tytuł
+
+    Obsługiwane są również:
+        TOP 10 #123
+        TOP15 #123
+        TOP 20 #123
+        1 Wykonawca - Tytuł
+        1. Wykonawca    Tytuł
+
+    Każde notowanie zmienia się raz w tygodniu, dlatego
+    skan archiwum jest wykonywany tylko w poniedziałek.
+    """
     try:
-        print(
-            "ARCHIWUM: rozpoczynam pobieranie "
-            "historii kanału..."
-        )
+        print("ARCHIWUM: rozpoczynam skanowanie historii kanału...")
 
         cid = 1518213312234655825
+        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
 
-        ch = (
-            bot.get_channel(cid)
-            or await bot.fetch_channel(cid)
-        )
+        if ch is None:
+            print(f"ARCHIWUM: nie znaleziono kanału {cid}")
+            return False
 
-        print(
-            f"ARCHIWUM: kanał "
-            f"{ch.name} ({ch.id})"
-        )
+        print(f"ARCHIWUM: kanał {ch.name} ({ch.id})")
 
-        entries = []
+        # Pobieramy wszystkie wiadomości, bo archiwum może być duże.
+        messages = []
         total_msgs = 0
 
-        async for msg in ch.history(limit=None):
+        async for msg in ch.history(limit=None, oldest_first=True):
             total_msgs += 1
+            if msg.content:
+                messages.append(msg.content)
 
-            if not msg.content:
-                continue
+        print(f"ARCHIWUM: przeskanowano {total_msgs} wiadomości")
 
-            text = msg.content
+        # ------------------------------------------------------------
+        # WYKRYWANIE NAGŁÓWKA NOTOWANIA
+        #
+        # TOP10 #123
+        # TOP 10 #123
+        # TOP15 #123
+        # TOP 20 #123
+        # ------------------------------------------------------------
+        top_pattern = re.compile(
+            r"^\s*TOP\s*(10|15|20)\s*#\s*(\d+)\b",
+            re.IGNORECASE
+        )
 
-            text = re.sub(
+        # Miejsce 1:
+        # 1
+        # 1.
+        # 1)
+        # 1. Wykonawca - Tytuł
+        first_pattern = re.compile(
+            r"^\s*1\s*[\.\)]?\s*(.*)$"
+        )
+
+        found = {}
+        current_chart = None
+
+        for content in messages:
+            # Usuwamy markdownowe linki, ale zachowujemy tekst.
+            content = re.sub(
                 r"\[([^\]]+)\]\([^)]+\)",
                 r"\1",
-                text
+                content
             )
 
-            text = re.sub(
-                r"https?://\S+",
-                "",
-                text
-            )
-
-            for raw in text.splitlines():
+            for raw in content.splitlines():
                 raw = raw.strip()
 
                 if not raw:
                     continue
 
-                upper = raw.upper()
+                # Szukamy początku nowego notowania.
+                top_match = top_pattern.match(raw)
+                if top_match:
+                    top_size = int(top_match.group(1))
+                    chart_number = int(top_match.group(2))
 
-                if (
-                    upper.startswith("TOP 10")
-                    or "LISTA PRZEBOJÓW" in upper
-                    or raw.startswith("🏆")
-                ):
+                    current_chart = {
+                        "numer": chart_number,
+                        "top": top_size,
+                        "winner": None
+                    }
+
+                    found[chart_number] = current_chart
+
+                    print(
+                        f"ARCHIWUM: znaleziono TOP{top_size} "
+                        f"#{chart_number}"
+                    )
                     continue
 
-                raw_no_num = re.sub(
-                    r"^\s*\d+[\.\)]?\s*",
-                    "",
-                    raw
-                ).strip()
-
-                if not raw_no_num:
+                # Jeżeli nie jesteśmy wewnątrz notowania — ignorujemy.
+                if current_chart is None:
                     continue
 
-                parts = re.split(
-                    r"\s{2,}|\t+",
-                    raw_no_num
+                # Jeżeli zwycięzca został już znaleziony dla tego notowania,
+                # nic więcej z tego notowania nie pobieramy.
+                if current_chart["winner"]:
+                    continue
+
+                first_match = first_pattern.match(raw)
+                if not first_match:
+                    continue
+
+                song = first_match.group(1).strip()
+
+                # Jeżeli linia "1." jest pusta, sprawdzimy następną linię.
+                # Wtedy dopuszczamy np.:
+                # 1.
+                # Wykonawca - Tytuł
+                if song:
+                    current_chart["winner"] = song
+                else:
+                    # Tymczasowo oznaczamy oczekiwanie na następną linię.
+                    current_chart["waiting_song_line"] = True
+
+                    # Nie kończymy tutaj — kolejna linia może być utworem.
+                    continue
+
+                print(
+                    f"ARCHIWUM: #{current_chart['numer']} "
+                    f"→ 1. {song}"
                 )
+
+        # ------------------------------------------------------------
+        # DRUGIE PRZEJŚCIE dla przypadków:
+        #
+        # TOP10 #123
+        # 1.
+        # Wykonawca - Tytuł
+        #
+        # Robimy to osobno, żeby nie komplikować głównego parsera.
+        # ------------------------------------------------------------
+        found = {}
+        current_chart = None
+        waiting_for_song = False
+
+        for content in messages:
+            content = re.sub(
+                r"\[([^\]]+)\]\([^)]+\)",
+                r"\1",
+                content
+            )
+
+            lines = content.splitlines()
+
+            for raw in lines:
+                raw = raw.strip()
+
+                if not raw:
+                    continue
+
+                top_match = top_pattern.match(raw)
+
+                if top_match:
+                    top_size = int(top_match.group(1))
+                    chart_number = int(top_match.group(2))
+
+                    current_chart = {
+                        "numer": chart_number,
+                        "top": top_size,
+                        "winner": None
+                    }
+
+                    found[chart_number] = current_chart
+                    waiting_for_song = False
+                    continue
+
+                if current_chart is None:
+                    continue
+
+                if current_chart["winner"]:
+                    continue
+
+                first_match = first_pattern.match(raw)
+
+                if first_match:
+                    song = first_match.group(1).strip()
+
+                    if song:
+                        current_chart["winner"] = song
+                        waiting_for_song = False
+                    else:
+                        waiting_for_song = True
+
+                    continue
+
+                if waiting_for_song:
+                    # Nie bierzemy kolejnego numeru ani kolejnego nagłówka.
+                    if re.match(r"^\s*\d+\s*[\.\)]?", raw):
+                        waiting_for_song = False
+                        continue
+
+                    # To jest tekst piosenki po "1."
+                    current_chart["winner"] = raw
+                    waiting_for_song = False
+
+        # ------------------------------------------------------------
+        # BUDOWA WYNIKU
+        # Tylko miejsce 1 z każdego znalezionego notowania.
+        # ------------------------------------------------------------
+        display_entries = []
+
+        for chart_number in sorted(found.keys()):
+            item = found[chart_number]
+            winner = item.get("winner")
+
+            if not winner:
+                print(
+                    f"ARCHIWUM: UWAGA — TOP{item['top']} "
+                    f"#{chart_number} — nie znaleziono miejsca 1"
+                )
+                continue
+
+            # Rozbijamy "Wykonawca - Tytuł".
+            # Jeżeli format jest kolumnowy, próbujemy również 2+ spacje/tab.
+            wykonawca = ""
+            tytul = ""
+
+            if " - " in winner:
+                wykonawca, tytul = winner.split(" - ", 1)
+            else:
+                parts = re.split(r"\s{2,}|\t+", winner)
 
                 if len(parts) >= 2:
                     wykonawca = parts[0].strip()
                     tytul = parts[1].strip()
+                else:
+                    # Nie zgadujemy wykonawcy.
+                    # Całość zachowujemy jako tytuł/tekst zwycięzcy.
+                    tytul = winner.strip()
 
-                    if wykonawca and tytul:
-                        entries.append({
-                            "wykonawca": wykonawca,
-                            "tytul": tytul
-                        })
+            entry = {
+                "notowanie": chart_number,
+                "miejsce": 1,
+                "top": item["top"],
+                "wykonawca": wykonawca.strip(),
+                "tytul": tytul.strip(),
+                "tekst": winner.strip()
+            }
 
-        print(
-            f"ARCHIWUM: przeskanowano "
-            f"{total_msgs} wiadomości, "
-            f"znaleziono {len(entries)} "
-            f"wpisów przed dedup"
-        )
-
-        unique = {}
-        display_entries = []
-
-        for entry in entries:
-            wykonawca = entry["wykonawca"].strip()
-            tytul = entry["tytul"].strip()
-
-            key = (
-                re.sub(
-                    r"\s+",
-                    " ",
-                    wykonawca
-                ).lower(),
-
-                re.sub(
-                    r"\s+",
-                    " ",
-                    tytul
-                ).lower()
-            )
-
-            if key not in unique:
-                unique[key] = True
-
-                display_entries.append({
-                    "wykonawca": wykonawca,
-                    "tytul": tytul
-                })
+            display_entries.append(entry)
 
         print(
-            f"ARCHIWUM: po usunięciu duplikatów "
-            f"{len(display_entries)} utworów"
+            f"ARCHIWUM: znaleziono {len(display_entries)} "
+            f"zwycięzców (tylko miejsce 1)"
         )
 
-        if len(display_entries) == 0:
+        if not display_entries:
             print(
-                "ARCHIWUM: 0 utworów - "
-                "nie nadpisuje Firebase!"
+                "ARCHIWUM: 0 zwycięzców — "
+                "nie nadpisuję Firebase!"
             )
-            return
+            return False
 
-        db.collection("archiwum").document(
-            "utwory"
-        ).set({
+        db.collection("archiwum").document("utwory").set({
             "utwory": display_entries,
             "count": len(display_entries),
             "updated_at": firestore.SERVER_TIMESTAMP
         })
 
         print(
-            f"ARCHIWUM: ZAPISANO "
-            f"{len(display_entries)} utworów "
+            f"ARCHIWUM: ZAPISANO {len(display_entries)} zwycięzców "
             f"do archiwum/utwory"
         )
+
+        return True
 
     except Exception as e:
         print(
             f"ERROR archiwum: "
             f"{type(e).__name__}: {e}"
         )
+        import traceback
+        traceback.print_exc()
+        return False
 
 
-
-# ============================================================
-# HALL OF FAME — ZWYCIĘZCY TOP 10
-# Pobiera z archiwalnego kanału tylko pozycję nr 1
-# z każdego notowania TOP 10 #XXX.
-# ============================================================
-
-HALL_OF_FAME_COLLECTION = "HALL OF FAME"
-HALL_OF_FAME_CHANNEL_ID = 1518213312234655825
+ARCHIWUM_SYSTEM_DOC = "_system_weekly_archive_sync"
 
 
-def extract_youtube_from_text(text: str):
-    """Zwraca (pełny link YouTube, youtubeId) albo (None, None)."""
-    if not text:
-        return None, None
-
-    patterns = [
-        r"https?://(?:www\.)?youtube\.com/watch\?[^ \n<>]*[?&]v=([A-Za-z0-9_-]{6,})",
-        r"https?://(?:www\.)?youtube\.com/shorts/([A-Za-z0-9_-]{6,})",
-        r"https?://youtu\.be/([A-Za-z0-9_-]{6,})",
-    ]
-
-    for pattern in patterns:
-        m = re.search(pattern, text, re.IGNORECASE)
-        if m:
-            youtube_id = m.group(1)
-            return f"https://www.youtube.com/watch?v={youtube_id}", youtube_id
-
-    return None, None
-
-
-def parse_hof_winner_line(raw: str):
+@tasks.loop(seconds=30)
+async def check_archiwum_weekly():
     """
-    Odczytuje np.:
-      1. WYKONAWCA    TYTUŁ    https://youtube...
-    albo:
-      1. WYKONAWCA - TYTUŁ https://youtube...
+    Uruchamia synchronizację archiwum tylko raz w tygodniu:
+    PONIEDZIAŁEK.
+
+    Po poprawnym skanowaniu zapisuje numer tygodnia.
+    Dzięki temu bot może sprawdzać warunek co 30 sekund,
+    ale samo archiwum zostanie pobrane tylko raz.
     """
-    if not raw:
-        return None
-
-    youtube_url, youtube_id = extract_youtube_from_text(raw)
-    if not youtube_url:
-        return None
-
-    clean = raw.strip()
-    clean = re.sub(r"https?://\S+", "", clean).strip()
-    clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean).strip()
-    clean = re.sub(r"^\s*1\s*[\.\)]?\s*", "", clean).strip()
-
-    if not clean:
-        return None
-
-    parts = re.split(r"\s{2,}|\t+", clean, maxsplit=1)
-
-    if len(parts) >= 2:
-        wykonawca = parts[0].strip()
-        tytul = parts[1].strip()
-    else:
-        parts = re.split(r"\s+(?:-|–|—|\|)\s+", clean, maxsplit=1)
-        if len(parts) < 2:
-            return None
-        wykonawca = parts[0].strip()
-        tytul = parts[1].strip()
-
-    if not wykonawca or not tytul:
-        return None
-
-    return {
-        "wykonawca": wykonawca,
-        "tytul": tytul,
-        "youtubeUrl": youtube_url,
-        "youtubeId": youtube_id,
-    }
-
-
-async def sync_hall_of_fame():
     try:
-        print("HALL OF FAME: rozpoczynam skanowanie archiwalnego kanału...")
+        now = datetime.now(WARSAW)
 
-        cid = HALL_OF_FAME_CHANNEL_ID
-        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-
-        if ch is None:
-            print(f"HALL OF FAME: nie znaleziono kanału {cid}")
+        # Tylko poniedziałek.
+        if now.weekday() != 0:
             return
 
-        # Discord zwraca historię od najnowszej do najstarszej.
-        # Odwracamy ją, aby przejść od pierwszego notowania do ostatniego.
-        messages = []
-        async for msg in ch.history(limit=None):
-            messages.append(msg)
-        messages.reverse()
+        week_key = now.strftime("%Y-%m-%d")
 
-        winners = {}
-        current_notowanie = None
-
-        top_pattern = re.compile(
-            r"\bTOP\s*10\s*#\s*(\d+)\b",
-            re.IGNORECASE
+        system_ref = (
+            db.collection("archiwum")
+            .document(ARCHIWUM_SYSTEM_DOC)
         )
 
-        for msg in messages:
-            if not msg.content:
-                continue
+        system_doc = system_ref.get()
+        system_data = system_doc.to_dict() if system_doc.exists else {}
 
-            for raw in msg.content.splitlines():
-                raw = raw.strip()
-                if not raw:
-                    continue
-
-                top_match = top_pattern.search(raw)
-                if top_match:
-                    try:
-                        current_notowanie = int(top_match.group(1))
-                    except ValueError:
-                        current_notowanie = None
-                    continue
-
-                if current_notowanie is None:
-                    continue
-
-                # WYŁĄCZNIE pozycja nr 1.
-                if not re.match(r"^\s*1\s*[\.\)]?\s+", raw):
-                    continue
-
-                winner = parse_hof_winner_line(raw)
-                if winner is None:
-                    print(
-                        f"HALL OF FAME: nie udało się odczytać zwycięzcy "
-                        f"TOP 10 #{current_notowanie}: {raw}"
-                    )
-                    continue
-
-                if current_notowanie not in winners:
-                    winners[current_notowanie] = {
-                        **winner,
-                        "numerNotowania": current_notowanie,
-                        "notowanie": f"TOP 10 #{current_notowanie:03d}",
-                        "sourceMessageId": str(msg.id),
-                        "sourceChannelId": str(cid),
-                    }
-
-        if not winners:
-            print("HALL OF FAME: nie znaleziono żadnych zwycięzców.")
+        # Już wykonane w tym poniedziałkowym tygodniu.
+        if system_data.get("last_sync_week") == week_key:
             return
 
-        collection = db.collection(HALL_OF_FAME_COLLECTION)
-        batch = db.batch()
-        batch_count = 0
+        print(
+            f"ARCHIWUM: poniedziałkowa synchronizacja "
+            f"dla {week_key}"
+        )
 
-        for numer in sorted(winners.keys()):
-            entry = winners[numer]
-            doc_id = f"{numer:03d}"
+        success = await sync_archiwum()
 
-            batch.set(
-                collection.document(doc_id),
-                {
-                    "numerNotowania": entry["numerNotowania"],
-                    "notowanie": entry["notowanie"],
-                    "wykonawca": entry["wykonawca"],
-                    "tytul": entry["tytul"],
-                    "youtubeUrl": entry["youtubeUrl"],
-                    "youtubeId": entry["youtubeId"],
-                    "sourceMessageId": entry["sourceMessageId"],
-                    "sourceChannelId": entry["sourceChannelId"],
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                },
-                merge=True
+        if not success:
+            print(
+                "ARCHIWUM: synchronizacja nieudana — "
+                "spróbuję ponownie za 30 sekund."
             )
+            return
 
-            batch_count += 1
-            if batch_count >= 400:
-                batch.commit()
-                batch = db.batch()
-                batch_count = 0
-
-        if batch_count > 0:
-            batch.commit()
+        system_ref.set({
+            "last_sync_week": week_key,
+            "last_sync_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
 
         print(
-            f"HALL OF FAME: zapisano {len(winners)} zwycięzców "
-            f"(TOP 10 #{min(winners):03d} - #{max(winners):03d})"
+            "ARCHIWUM: poniedziałkowa synchronizacja "
+            "zakończona i oznaczona jako wykonana."
         )
 
     except Exception as e:
-        print(f"ERROR HALL OF FAME: {type(e).__name__}: {e}")
+        print(
+            f"ERROR archiwum weekly checker: "
+            f"{type(e).__name__}: {e}"
+        )
         import traceback
         traceback.print_exc()
 
@@ -1552,24 +1566,12 @@ async def on_ready():
         "TEST: KONIEC sync_members()"
     )
 
-    print(
-        "TEST: START sync_archiwum()"
-    )
-
-    await sync_archiwum()
+    if not check_archiwum_weekly.is_running():
+        check_archiwum_weekly.start()
 
     print(
-        "TEST: KONIEC sync_archiwum()"
-    )
-
-    print(
-        "TEST: START sync_hall_of_fame()"
-    )
-
-    await sync_hall_of_fame()
-
-    print(
-        "TEST: KONIEC sync_hall_of_fame()"
+        "ARCHIWUM: tygodniowy system aktywny "
+        "— skanowanie tylko w poniedziałek"
     )
 
     print(
