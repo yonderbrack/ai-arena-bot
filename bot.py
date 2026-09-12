@@ -695,6 +695,197 @@ async def sync_archiwum():
         )
 
 
+
+# ============================================================
+# HALL OF FAME — ZWYCIĘZCY TOP 10
+# Pobiera z archiwalnego kanału tylko pozycję nr 1
+# z każdego notowania TOP 10 #XXX.
+# ============================================================
+
+HALL_OF_FAME_COLLECTION = "HALL OF FAME"
+HALL_OF_FAME_CHANNEL_ID = 1518213312234655825
+
+
+def extract_youtube_from_text(text: str):
+    """Zwraca (pełny link YouTube, youtubeId) albo (None, None)."""
+    if not text:
+        return None, None
+
+    patterns = [
+        r"https?://(?:www\.)?youtube\.com/watch\?[^ \n<>]*[?&]v=([A-Za-z0-9_-]{6,})",
+        r"https?://(?:www\.)?youtube\.com/shorts/([A-Za-z0-9_-]{6,})",
+        r"https?://youtu\.be/([A-Za-z0-9_-]{6,})",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            youtube_id = m.group(1)
+            return f"https://www.youtube.com/watch?v={youtube_id}", youtube_id
+
+    return None, None
+
+
+def parse_hof_winner_line(raw: str):
+    """
+    Odczytuje np.:
+      1. WYKONAWCA    TYTUŁ    https://youtube...
+    albo:
+      1. WYKONAWCA - TYTUŁ https://youtube...
+    """
+    if not raw:
+        return None
+
+    youtube_url, youtube_id = extract_youtube_from_text(raw)
+    if not youtube_url:
+        return None
+
+    clean = raw.strip()
+    clean = re.sub(r"https?://\S+", "", clean).strip()
+    clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean).strip()
+    clean = re.sub(r"^\s*1\s*[\.\)]?\s*", "", clean).strip()
+
+    if not clean:
+        return None
+
+    parts = re.split(r"\s{2,}|\t+", clean, maxsplit=1)
+
+    if len(parts) >= 2:
+        wykonawca = parts[0].strip()
+        tytul = parts[1].strip()
+    else:
+        parts = re.split(r"\s+(?:-|–|—|\|)\s+", clean, maxsplit=1)
+        if len(parts) < 2:
+            return None
+        wykonawca = parts[0].strip()
+        tytul = parts[1].strip()
+
+    if not wykonawca or not tytul:
+        return None
+
+    return {
+        "wykonawca": wykonawca,
+        "tytul": tytul,
+        "youtubeUrl": youtube_url,
+        "youtubeId": youtube_id,
+    }
+
+
+async def sync_hall_of_fame():
+    try:
+        print("HALL OF FAME: rozpoczynam skanowanie archiwalnego kanału...")
+
+        cid = HALL_OF_FAME_CHANNEL_ID
+        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+
+        if ch is None:
+            print(f"HALL OF FAME: nie znaleziono kanału {cid}")
+            return
+
+        # Discord zwraca historię od najnowszej do najstarszej.
+        # Odwracamy ją, aby przejść od pierwszego notowania do ostatniego.
+        messages = []
+        async for msg in ch.history(limit=None):
+            messages.append(msg)
+        messages.reverse()
+
+        winners = {}
+        current_notowanie = None
+
+        top_pattern = re.compile(
+            r"\bTOP\s*10\s*#\s*(\d+)\b",
+            re.IGNORECASE
+        )
+
+        for msg in messages:
+            if not msg.content:
+                continue
+
+            for raw in msg.content.splitlines():
+                raw = raw.strip()
+                if not raw:
+                    continue
+
+                top_match = top_pattern.search(raw)
+                if top_match:
+                    try:
+                        current_notowanie = int(top_match.group(1))
+                    except ValueError:
+                        current_notowanie = None
+                    continue
+
+                if current_notowanie is None:
+                    continue
+
+                # WYŁĄCZNIE pozycja nr 1.
+                if not re.match(r"^\s*1\s*[\.\)]?\s+", raw):
+                    continue
+
+                winner = parse_hof_winner_line(raw)
+                if winner is None:
+                    print(
+                        f"HALL OF FAME: nie udało się odczytać zwycięzcy "
+                        f"TOP 10 #{current_notowanie}: {raw}"
+                    )
+                    continue
+
+                if current_notowanie not in winners:
+                    winners[current_notowanie] = {
+                        **winner,
+                        "numerNotowania": current_notowanie,
+                        "notowanie": f"TOP 10 #{current_notowanie:03d}",
+                        "sourceMessageId": str(msg.id),
+                        "sourceChannelId": str(cid),
+                    }
+
+        if not winners:
+            print("HALL OF FAME: nie znaleziono żadnych zwycięzców.")
+            return
+
+        collection = db.collection(HALL_OF_FAME_COLLECTION)
+        batch = db.batch()
+        batch_count = 0
+
+        for numer in sorted(winners.keys()):
+            entry = winners[numer]
+            doc_id = f"{numer:03d}"
+
+            batch.set(
+                collection.document(doc_id),
+                {
+                    "numerNotowania": entry["numerNotowania"],
+                    "notowanie": entry["notowanie"],
+                    "wykonawca": entry["wykonawca"],
+                    "tytul": entry["tytul"],
+                    "youtubeUrl": entry["youtubeUrl"],
+                    "youtubeId": entry["youtubeId"],
+                    "sourceMessageId": entry["sourceMessageId"],
+                    "sourceChannelId": entry["sourceChannelId"],
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+                merge=True
+            )
+
+            batch_count += 1
+            if batch_count >= 400:
+                batch.commit()
+                batch = db.batch()
+                batch_count = 0
+
+        if batch_count > 0:
+            batch.commit()
+
+        print(
+            f"HALL OF FAME: zapisano {len(winners)} zwycięzców "
+            f"(TOP 10 #{min(winners):03d} - #{max(winners):03d})"
+        )
+
+    except Exception as e:
+        print(f"ERROR HALL OF FAME: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 # ============================================================
 # ODZYSKIWANIE PIN — UTWORZENIE ŻĄDANIA - BEZ ZMIAN
 # ============================================================
@@ -1369,6 +1560,16 @@ async def on_ready():
 
     print(
         "TEST: KONIEC sync_archiwum()"
+    )
+
+    print(
+        "TEST: START sync_hall_of_fame()"
+    )
+
+    await sync_hall_of_fame()
+
+    print(
+        "TEST: KONIEC sync_hall_of_fame()"
     )
 
     print(
