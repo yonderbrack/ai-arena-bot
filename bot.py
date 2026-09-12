@@ -547,22 +547,27 @@ async def sync_members():
 
 async def sync_archiwum():
     """
-    ARCHIWUM — zapisuje WYŁĄCZNIE zwycięzcę (miejsce 1)
-    z każdego notowania.
+    ARCHIWUM — wykrywa WYŁĄCZNIE NAJNOWSZE NOTOWANIE
+    i z niego pobiera WYŁĄCZNIE miejsce 1.
 
-    Format archiwum:
+    Przykład:
         TOP10 #123
         1. Wykonawca - Tytuł
 
-    Obsługiwane są również:
+    Obsługiwane:
+        TOP10 #123
         TOP 10 #123
         TOP15 #123
+        TOP 15 #123
+        TOP20 #123
         TOP 20 #123
-        1 Wykonawca - Tytuł
-        1. Wykonawca    Tytuł
 
-    Każde notowanie zmienia się raz w tygodniu, dlatego
-    skan archiwum jest wykonywany tylko w poniedziałek.
+    Ważne:
+    - NIE zapisujemy ponownie całej historii.
+    - Wybieramy najwyższy numer notowania (#123, #124 itd.).
+    - Z najnowszego notowania bierzemy tylko miejsce 1.
+    - W Firebase zachowujemy stare wpisy i dokładamy/aktualizujemy
+      tylko najnowsze notowanie.
     """
     try:
         print("ARCHIWUM: rozpoczynam skanowanie historii kanału...")
@@ -576,7 +581,9 @@ async def sync_archiwum():
 
         print(f"ARCHIWUM: kanał {ch.name} ({ch.id})")
 
-        # Pobieramy wszystkie wiadomości, bo archiwum może być duże.
+        # Pobieramy historię, ponieważ numer notowania może być ukryty
+        # w starszej wiadomości. Niczego jednak nie zapisujemy poza
+        # NAJNOWSZYM znalezionym notowaniem.
         messages = []
         total_msgs = 0
 
@@ -587,33 +594,21 @@ async def sync_archiwum():
 
         print(f"ARCHIWUM: przeskanowano {total_msgs} wiadomości")
 
-        # ------------------------------------------------------------
-        # WYKRYWANIE NAGŁÓWKA NOTOWANIA
-        #
-        # TOP10 #123
-        # TOP 10 #123
-        # TOP15 #123
-        # TOP 20 #123
-        # ------------------------------------------------------------
         top_pattern = re.compile(
             r"^\s*TOP\s*(10|15|20)\s*#\s*(\d+)\b",
             re.IGNORECASE
         )
 
-        # Miejsce 1:
-        # 1
-        # 1.
-        # 1)
-        # 1. Wykonawca - Tytuł
         first_pattern = re.compile(
             r"^\s*1\s*[\.\)]?\s*(.*)$"
         )
 
-        found = {}
+        # Wszystkie znalezione notowania, ale tylko chwilowo w pamięci.
+        charts = {}
         current_chart = None
+        waiting_for_winner = False
 
         for content in messages:
-            # Usuwamy markdownowe linki, ale zachowujemy tekst.
             content = re.sub(
                 r"\[([^\]]+)\]\([^)]+\)",
                 r"\1",
@@ -622,11 +617,9 @@ async def sync_archiwum():
 
             for raw in content.splitlines():
                 raw = raw.strip()
-
                 if not raw:
                     continue
 
-                # Szukamy początku nowego notowania.
                 top_match = top_pattern.match(raw)
                 if top_match:
                     top_size = int(top_match.group(1))
@@ -637,188 +630,193 @@ async def sync_archiwum():
                         "top": top_size,
                         "winner": None
                     }
-
-                    found[chart_number] = current_chart
+                    charts[chart_number] = current_chart
+                    waiting_for_winner = False
 
                     print(
-                        f"ARCHIWUM: znaleziono TOP{top_size} "
-                        f"#{chart_number}"
+                        f"ARCHIWUM: znaleziono nagłówek "
+                        f"TOP{top_size} #{chart_number}"
                     )
                     continue
 
-                # Jeżeli nie jesteśmy wewnątrz notowania — ignorujemy.
                 if current_chart is None:
                     continue
 
-                # Jeżeli zwycięzca został już znaleziony dla tego notowania,
-                # nic więcej z tego notowania nie pobieramy.
-                if current_chart["winner"]:
+                # Po znalezieniu 1. nie interesuje nas absolutnie nic
+                # więcej z tego notowania.
+                if current_chart.get("winner"):
                     continue
 
                 first_match = first_pattern.match(raw)
-                if not first_match:
-                    continue
-
-                song = first_match.group(1).strip()
-
-                # Jeżeli linia "1." jest pusta, sprawdzimy następną linię.
-                # Wtedy dopuszczamy np.:
-                # 1.
-                # Wykonawca - Tytuł
-                if song:
-                    current_chart["winner"] = song
-                else:
-                    # Tymczasowo oznaczamy oczekiwanie na następną linię.
-                    current_chart["waiting_song_line"] = True
-
-                    # Nie kończymy tutaj — kolejna linia może być utworem.
-                    continue
-
-                print(
-                    f"ARCHIWUM: #{current_chart['numer']} "
-                    f"→ 1. {song}"
-                )
-
-        # ------------------------------------------------------------
-        # DRUGIE PRZEJŚCIE dla przypadków:
-        #
-        # TOP10 #123
-        # 1.
-        # Wykonawca - Tytuł
-        #
-        # Robimy to osobno, żeby nie komplikować głównego parsera.
-        # ------------------------------------------------------------
-        found = {}
-        current_chart = None
-        waiting_for_song = False
-
-        for content in messages:
-            content = re.sub(
-                r"\[([^\]]+)\]\([^)]+\)",
-                r"\1",
-                content
-            )
-
-            lines = content.splitlines()
-
-            for raw in lines:
-                raw = raw.strip()
-
-                if not raw:
-                    continue
-
-                top_match = top_pattern.match(raw)
-
-                if top_match:
-                    top_size = int(top_match.group(1))
-                    chart_number = int(top_match.group(2))
-
-                    current_chart = {
-                        "numer": chart_number,
-                        "top": top_size,
-                        "winner": None
-                    }
-
-                    found[chart_number] = current_chart
-                    waiting_for_song = False
-                    continue
-
-                if current_chart is None:
-                    continue
-
-                if current_chart["winner"]:
-                    continue
-
-                first_match = first_pattern.match(raw)
-
                 if first_match:
-                    song = first_match.group(1).strip()
+                    winner = first_match.group(1).strip()
 
-                    if song:
-                        current_chart["winner"] = song
-                        waiting_for_song = False
+                    if winner:
+                        current_chart["winner"] = winner
+                        waiting_for_winner = False
+                        print(
+                            f"ARCHIWUM: #{current_chart['numer']} "
+                            f"→ 1. {winner}"
+                        )
                     else:
-                        waiting_for_song = True
+                        # Obsługa układu:
+                        # 1.
+                        # Wykonawca - Tytuł
+                        waiting_for_winner = True
 
                     continue
 
-                if waiting_for_song:
-                    # Nie bierzemy kolejnego numeru ani kolejnego nagłówka.
+                if waiting_for_winner:
+                    # Jeżeli następna linia jest kolejnym numerem,
+                    # nie zgadujemy utworu.
                     if re.match(r"^\s*\d+\s*[\.\)]?", raw):
-                        waiting_for_song = False
+                        waiting_for_winner = False
                         continue
 
-                    # To jest tekst piosenki po "1."
                     current_chart["winner"] = raw
-                    waiting_for_song = False
+                    waiting_for_winner = False
+                    print(
+                        f"ARCHIWUM: #{current_chart['numer']} "
+                        f"→ 1. {raw}"
+                    )
 
-        # ------------------------------------------------------------
-        # BUDOWA WYNIKU
-        # Tylko miejsce 1 z każdego znalezionego notowania.
-        # ------------------------------------------------------------
-        display_entries = []
+        if not charts:
+            print("ARCHIWUM: nie znaleziono żadnego TOP10/TOP15/TOP20 z numerem #")
+            return False
 
-        for chart_number in sorted(found.keys()):
-            item = found[chart_number]
-            winner = item.get("winner")
-
-            if not winner:
-                print(
-                    f"ARCHIWUM: UWAGA — TOP{item['top']} "
-                    f"#{chart_number} — nie znaleziono miejsca 1"
-                )
-                continue
-
-            # Rozbijamy "Wykonawca - Tytuł".
-            # Jeżeli format jest kolumnowy, próbujemy również 2+ spacje/tab.
-            wykonawca = ""
-            tytul = ""
-
-            if " - " in winner:
-                wykonawca, tytul = winner.split(" - ", 1)
-            else:
-                parts = re.split(r"\s{2,}|\t+", winner)
-
-                if len(parts) >= 2:
-                    wykonawca = parts[0].strip()
-                    tytul = parts[1].strip()
-                else:
-                    # Nie zgadujemy wykonawcy.
-                    # Całość zachowujemy jako tytuł/tekst zwycięzcy.
-                    tytul = winner.strip()
-
-            entry = {
-                "notowanie": chart_number,
-                "miejsce": 1,
-                "top": item["top"],
-                "wykonawca": wykonawca.strip(),
-                "tytul": tytul.strip(),
-                "tekst": winner.strip()
-            }
-
-            display_entries.append(entry)
+        # ============================================================
+        # TYLKO NAJNOWSZE NOTOWANIE
+        # ============================================================
+        latest_number = max(charts.keys())
+        latest = charts[latest_number]
+        winner = latest.get("winner")
 
         print(
-            f"ARCHIWUM: znaleziono {len(display_entries)} "
-            f"zwycięzców (tylko miejsce 1)"
+            f"ARCHIWUM: NAJNOWSZE NOTOWANIE = "
+            f"TOP{latest['top']} #{latest_number}"
         )
 
-        if not display_entries:
+        if not winner:
             print(
-                "ARCHIWUM: 0 zwycięzców — "
-                "nie nadpisuję Firebase!"
+                f"ARCHIWUM: #{latest_number} — "
+                f"nie znaleziono miejsca 1. "
+                f"NIE aktualizuję Firebase."
             )
             return False
 
-        db.collection("archiwum").document("utwory").set({
-            "utwory": display_entries,
-            "count": len(display_entries),
-            "updated_at": firestore.SERVER_TIMESTAMP
-        })
+        # Rozbicie zwycięzcy na wykonawcę i tytuł.
+        wykonawca = ""
+        tytul = ""
+
+        if " - " in winner:
+            wykonawca, tytul = winner.split(" - ", 1)
+        else:
+            parts = re.split(r"\s{2,}|\t+", winner)
+            if len(parts) >= 2:
+                wykonawca = parts[0].strip()
+                tytul = parts[1].strip()
+            else:
+                tytul = winner.strip()
+
+        latest_entry = {
+            "notowanie": latest_number,
+            "miejsce": 1,
+            "top": latest["top"],
+            "wykonawca": wykonawca.strip(),
+            "tytul": tytul.strip(),
+            "tekst": winner.strip()
+        }
+
+        # ============================================================
+        # FIREBASE — ZMIENIAMY TYLKO NAJNOWSZE NOTOWANIE
+        # ============================================================
+        doc_ref = db.collection("archiwum").document("utwory")
+        current_doc = doc_ref.get()
+
+        existing_entries = []
+        if current_doc.exists:
+            data = current_doc.to_dict() or {}
+            raw_entries = data.get("utwory", [])
+            if isinstance(raw_entries, list):
+                existing_entries = raw_entries
+
+        # Usuwamy ewentualny stary wpis tego samego numeru #,
+        # a następnie dokładamy tylko aktualny.
+        updated_entries = []
+        replaced = False
+
+        for entry in existing_entries:
+            if not isinstance(entry, dict):
+                continue
+
+            try:
+                entry_number = int(entry.get("notowanie"))
+            except (TypeError, ValueError):
+                entry_number = None
+
+            if entry_number == latest_number:
+                if not replaced:
+                    updated_entries.append(latest_entry)
+                    replaced = True
+                # kolejnego duplikatu tego samego # już nie dodajemy
+            else:
+                updated_entries.append(entry)
+
+        if not replaced:
+            updated_entries.append(latest_entry)
+
+        # Sortowanie po numerze notowania dla czytelności.
+        updated_entries.sort(
+            key=lambda x: int(x.get("notowanie", 0))
+            if str(x.get("notowanie", "")).isdigit()
+            else 0
+        )
+
+        # Jeżeli najnowszy wpis jest identyczny jak już zapisany,
+        # nie wykonujemy niepotrzebnego zapisu.
+        already_same = False
+        for entry in existing_entries:
+            if isinstance(entry, dict):
+                try:
+                    if int(entry.get("notowanie")) == latest_number:
+                        compare_keys = (
+                            "notowanie",
+                            "miejsce",
+                            "top",
+                            "wykonawca",
+                            "tytul",
+                            "tekst"
+                        )
+                        already_same = all(
+                            entry.get(k) == latest_entry.get(k)
+                            for k in compare_keys
+                        )
+                        break
+                except (TypeError, ValueError):
+                    pass
+
+        if already_same:
+            print(
+                f"ARCHIWUM: #{latest_number} już jest w Firebase "
+                f"i nie wymaga aktualizacji."
+            )
+            return True
+
+        doc_ref.set({
+            "utwory": updated_entries,
+            "count": len(updated_entries),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "last_notowanie": latest_number,
+            "last_miejsce": 1
+        }, merge=True)
 
         print(
-            f"ARCHIWUM: ZAPISANO {len(display_entries)} zwycięzców "
-            f"do archiwum/utwory"
+            f"ARCHIWUM: AKTUALIZACJA TYLKO NOWEGO WPISU "
+            f"#{latest_number} → 1. {winner}"
+        )
+        print(
+            f"ARCHIWUM: w Firebase pozostaje łącznie "
+            f"{len(updated_entries)} zwycięzców"
         )
 
         return True
