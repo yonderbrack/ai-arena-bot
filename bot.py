@@ -1600,12 +1600,67 @@ async def on_ready():
         "TEST: KONIEC sync_members()"
     )
 
+    # ========================================================
+    # ARCHIWUM
+    #
+    # PIERWSZE URUCHOMIENIE:
+    # sprawdzamy NATYCHMIAST w on_ready(), zamiast czekać
+    # na pierwsze wykonanie pętli tasks.loop.
+    #
+    # KOLEJNE URUCHOMIENIA:
+    # check_archiwum_weekly pilnuje synchronizacji tylko
+    # raz w poniedziałek.
+    # ========================================================
+
+    archive_system_ref = (
+        db.collection("archiwum")
+        .document(ARCHIWUM_SYSTEM_DOC)
+    )
+
+    archive_system_doc = archive_system_ref.get()
+    archive_system_data = (
+        archive_system_doc.to_dict()
+        if archive_system_doc.exists
+        else {}
+    )
+
+    if not archive_system_data.get("initialized"):
+        print(
+            "ARCHIWUM: PIERWSZE URUCHOMIENIE — "
+            "skanuję TERAZ."
+        )
+
+        archive_success = await sync_archiwum()
+
+        if archive_success:
+            now_archive = datetime.now(WARSAW)
+            archive_week_key = now_archive.strftime("%Y-%m-%d")
+
+            archive_system_ref.set({
+                "initialized": True,
+                "initialized_at": firestore.SERVER_TIMESTAMP,
+                "last_sync_week": archive_week_key,
+                "last_sync_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+
+            print(
+                "ARCHIWUM: PIERWSZY ZAPIS DO FIREBASE "
+                "ZAKOŃCZONY."
+            )
+        else:
+            print(
+                "ARCHIWUM: PIERWSZY SKAN NIEUDANY — "
+                "nie ustawiam initialized. "
+                "Bot spróbuje ponownie po restarcie."
+            )
+
     if not check_archiwum_weekly.is_running():
         check_archiwum_weekly.start()
 
     print(
         "ARCHIWUM: tygodniowy system aktywny "
-        "— skanowanie tylko w poniedziałek"
+        "— pierwszy zapis wykonany przy starcie, "
+        "potem sprawdzanie tylko w poniedziałek"
     )
 
     print(
