@@ -698,7 +698,7 @@ async def sync_archiwum():
 
 # ============================================================
 # HALL OF FAME — TYLKO NR 1 — TOP 10/15/20
-# Sync przy starcie + co poniedziałek, starych nie rusza
+# 1 RAZ przy pierwszym uruchomieniu wszystkie, potem tylko poniedziałek ostatnie
 # ============================================================
 
 HALL_OF_FAME_CHANNEL_ID = 1518213312234655825
@@ -706,7 +706,157 @@ HALL_OF_FAME_COLLECTION = "HALL OF FAME"
 HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
 
 
-async def sync_hall_of_fame():
+async def sync_hall_of_fame_all():
+    try:
+        print(
+            "HALL OF FAME: PIERWSZE URUCHOMIENIE - ściągam WSZYSTKIE nr 1..."
+        )
+
+        cid = HALL_OF_FAME_CHANNEL_ID
+
+        ch = (
+            bot.get_channel(cid)
+            or await bot.fetch_channel(cid)
+        )
+
+        if ch is None:
+            print(
+                f"HOF: nie znaleziono kanału {cid}"
+            )
+            return 0
+
+        added = 0
+        skipped = 0
+
+        async for msg in ch.history(limit=None):
+            if not msg.content:
+                continue
+
+            found_line = None
+            for raw in msg.content.splitlines():
+                if re.match(r"^\s*1(?!\d)[\.\).]?\s+.+", raw):
+                    found_line = raw.strip()
+                    break
+
+            if not found_line:
+                continue
+
+            m_top = re.search(
+                r"TOP\s*(\d+)\s*#\s*0*(\d+)",
+                msg.content,
+                re.IGNORECASE
+            )
+
+            if m_top:
+                top_size = int(m_top.group(1))
+                numer = int(m_top.group(2))
+            else:
+                m_num = re.search(
+                    r"#\s*0*(\d+)",
+                    msg.content
+                )
+                if not m_num:
+                    continue
+                top_size = 10
+                numer = int(m_num.group(1))
+
+            doc_id = f"{numer:03d}"
+
+            doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
+
+            if doc_ref.get().exists:
+                skipped += 1
+                continue
+
+            youtubeUrl = ""
+            youtubeId = ""
+
+            urls = re.findall(
+                r"https?://[^\s\)\]\<\>\"']+",
+                found_line
+            )
+
+            for u in urls:
+                uc = u.rstrip(").,!;")
+                if "youtu" in uc.lower():
+                    youtubeUrl = uc
+                    m_id = re.search(
+                        r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)",
+                        uc
+                    )
+                    if m_id:
+                        youtubeId = m_id.group(1)
+                    break
+
+            clean = re.sub(
+                r"\[([^\]]+)\]\([^)]+\)",
+                r"\1",
+                found_line
+            )
+
+            clean = re.sub(
+                r"https?://\S+",
+                "",
+                clean
+            )
+
+            clean = re.sub(
+                r"^\s*1(?!\d)[\.\).]?\s*",
+                "",
+                clean
+            ).strip()
+
+            wykonawca = ""
+            tytul = ""
+
+            if " - " in clean:
+                wykonawca, tytul = [x.strip() for x in clean.split(" - ", 1)]
+            elif " – " in clean:
+                wykonawca, tytul = [x.strip() for x in clean.split(" – ", 1)]
+            else:
+                parts = re.split(
+                    r"\s{2,}|\t+",
+                    clean
+                )
+                if len(parts) >= 2:
+                    wykonawca = parts[0].strip()
+                    tytul = parts[1].strip()
+                else:
+                    tytul = clean
+
+            if not tytul:
+                continue
+
+            doc_ref.set({
+                "notowanie": f"TOP {top_size} #{doc_id}",
+                "numerNotowania": numer,
+                "sourceChannelId": str(cid),
+                "sourceMessageId": str(msg.id),
+                "tytul": tytul,
+                "wykonawca": wykonawca,
+                "youtubeId": youtubeId,
+                "youtubeUrl": youtubeUrl,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            })
+
+            added += 1
+
+        print(
+            f"HALL OF FAME: KONIEC pierwszego ściągania. Dodano: {added}, pominięto: {skipped}"
+        )
+
+        return added
+
+    except Exception as e:
+        print(
+            f"ERROR HOF ALL: {type(e).__name__}: {e}"
+        )
+        import traceback
+        traceback.print_exc()
+        return 0
+
+
+async def sync_hall_of_fame_latest():
     try:
         print(
             "HALL OF FAME: szukam ostatniego miejsca nr 1..."
@@ -729,17 +879,15 @@ async def sync_hall_of_fame():
             if not msg.content:
                 continue
 
-            # TYLKO PIOSENKA Z NUMEREM 1 — 1 / 1. / 1) — nie 10,11,12
             found_line = None
             for raw in msg.content.splitlines():
-                if re.match(r"^\s*1(?!\d)[\.\)]?\s+.+", raw):
+                if re.match(r"^\s*1(?!\d)[\.\).]?\s+.+", raw):
                     found_line = raw.strip()
                     break
 
             if not found_line:
                 continue
 
-            # numer notowania — działa dla TOP 10 #10, TOP 15 #15, TOP 20 #20
             m_top = re.search(
                 r"TOP\s*(\d+)\s*#\s*0*(\d+)",
                 msg.content,
@@ -761,16 +909,14 @@ async def sync_hall_of_fame():
 
             doc_id = f"{numer:03d}"
 
-            # STARYCH NIE RUSZAMY
             doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
 
             if doc_ref.get().exists:
                 print(
-                    f"HALL OF FAME: {doc_id} już istnieje - pomijam"
+                    f"HALL OF FAME: {doc_id} już istnieje - nie ma nowego"
                 )
                 return
 
-            # youtube z linii nr 1
             youtubeUrl = ""
             youtubeId = ""
 
@@ -784,7 +930,7 @@ async def sync_hall_of_fame():
                 if "youtu" in uc.lower():
                     youtubeUrl = uc
                     m_id = re.search(
-                        r"(?:v=|youtu\.be/|shorts/)([^&\s\?\)]+)",
+                        r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)",
                         uc
                     )
                     if m_id:
@@ -804,7 +950,7 @@ async def sync_hall_of_fame():
             )
 
             clean = re.sub(
-                r"^\s*1(?!\d)[\.\)]?\s*",
+                r"^\s*1(?!\d)[\.\).]?\s*",
                 "",
                 clean
             ).strip()
@@ -843,7 +989,7 @@ async def sync_hall_of_fame():
             })
 
             print(
-                f"HALL OF FAME: ZAPISANO NOWY {doc_id} (TOP {top_size}): {wykonawca} - {tytul}"
+                f"HALL OF FAME: ZAPISANO NOWE {doc_id} (TOP {top_size}): {wykonawca} - {tytul}"
             )
             return
 
@@ -853,7 +999,40 @@ async def sync_hall_of_fame():
 
     except Exception as e:
         print(
-            f"ERROR HOF: {type(e).__name__}: {e}"
+            f"ERROR HOF LATEST: {type(e).__name__}: {e}"
+        )
+        import traceback
+        traceback.print_exc()
+
+
+async def sync_hall_of_fame_initial():
+    try:
+        sys_ref = db.collection(HALL_OF_FAME_COLLECTION).document(HALL_OF_FAME_SYSTEM_DOC)
+        sys_doc = sys_ref.get()
+
+        if sys_doc.exists:
+            data = sys_doc.to_dict() or {}
+            if data.get("initialized"):
+                print(
+                    "HALL OF FAME: już zainicjalizowane - pomijam ściąganie wszystkich przy restarcie"
+                )
+                return
+
+        print(
+            "HALL OF FAME: pierwsze uruchomienie w historii - ściągam WSZYSTKIE"
+        )
+
+        await sync_hall_of_fame_all()
+
+        sys_ref.set({
+            "initialized": True,
+            "initialized_at": firestore.SERVER_TIMESTAMP,
+            "description": "HALL OF FAME - tylko nr 1, TOP 10/15/20 - inicjalizacja raz"
+        }, merge=True)
+
+    except Exception as e:
+        print(
+            f"ERROR HOF INIT: {type(e).__name__}: {e}"
         )
         import traceback
         traceback.print_exc()
@@ -876,21 +1055,22 @@ async def check_hall_of_fame():
 
         sys_doc = sys_ref.get()
 
+        data = {}
         if sys_doc.exists:
             data = sys_doc.to_dict() or {}
-            if data.get("last_week") == week_key:
-                return
+
+        if data.get("last_week") == week_key:
+            return
 
         print(
             f"HALL OF FAME: poniedziałkowe sprawdzenie {week_key}"
         )
 
-        await sync_hall_of_fame()
+        await sync_hall_of_fame_latest()
 
         sys_ref.set({
             "last_week": week_key,
-            "last_check": firestore.SERVER_TIMESTAMP,
-            "description": "HALL OF FAME - tylko nr 1, TOP 10/15/20"
+            "last_check": firestore.SERVER_TIMESTAMP
         }, merge=True)
 
     except Exception as e:
@@ -1582,13 +1762,13 @@ async def on_ready():
     )
 
     print(
-        "TEST: START sync_hall_of_fame()"
+        "TEST: START sync_hall_of_fame_initial()"
     )
 
-    await sync_hall_of_fame()
+    await sync_hall_of_fame_initial()
 
     print(
-        "TEST: KONIEC sync_hall_of_fame()"
+        "TEST: KONIEC sync_hall_of_fame_initial()"
     )
 
     print(
@@ -1604,7 +1784,7 @@ async def on_ready():
     )
 
     print(
-        "HALL OF FAME: aktywny - tylko nr 1, TOP 10/15/20, start + poniedziałek"
+        "HALL OF FAME: aktywny - raz wszystkie przy starcie, potem tylko poniedziałek ostatnie"
     )
 
 
