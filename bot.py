@@ -849,10 +849,6 @@ async def check_archiwum_weekly():
     try:
         now = datetime.now(WARSAW)
 
-        # Tylko poniedziałek.
-        if now.weekday() != 0:
-            return
-
         week_key = now.strftime("%Y-%m-%d")
 
         system_ref = (
@@ -863,8 +859,48 @@ async def check_archiwum_weekly():
         system_doc = system_ref.get()
         system_data = system_doc.to_dict() if system_doc.exists else {}
 
-        # Już wykonane w tym poniedziałkowym tygodniu.
-        if system_data.get("last_sync_week") == week_key:
+        last_sync_week = system_data.get("last_sync_week")
+
+        # ------------------------------------------------------------
+        # PIERWSZE URUCHOMIENIE:
+        # wykonaj od razu, niezależnie od dnia tygodnia.
+        # Dzięki temu można sprawdzić archiwum natychmiast po wdrożeniu.
+        # ------------------------------------------------------------
+        if not system_data.get("initialized"):
+            print(
+                "ARCHIWUM: pierwsze uruchomienie — "
+                "wykonuję testowy pełny skan TERAZ."
+            )
+
+            success = await sync_archiwum()
+
+            if not success:
+                print(
+                    "ARCHIWUM: pierwszy skan nieudany — "
+                    "spróbuję ponownie za 30 sekund."
+                )
+                return
+
+            system_ref.set({
+                "initialized": True,
+                "initialized_at": firestore.SERVER_TIMESTAMP,
+                "last_sync_week": week_key,
+                "last_sync_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+
+            print(
+                "ARCHIWUM: pierwszy skan zakończony pomyślnie."
+            )
+            return
+
+        # ------------------------------------------------------------
+        # NORMALNA PRACA:
+        # kolejne skany tylko w poniedziałek i tylko raz w tygodniu.
+        # ------------------------------------------------------------
+        if now.weekday() != 0:
+            return
+
+        if last_sync_week == week_key:
             return
 
         print(
