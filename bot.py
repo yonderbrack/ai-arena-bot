@@ -546,392 +546,153 @@ async def sync_members():
 # ============================================================
 
 async def sync_archiwum():
-    """
-    ARCHIWUM — wykrywa WYŁĄCZNIE NAJNOWSZE NOTOWANIE
-    i z niego pobiera WYŁĄCZNIE miejsce 1.
-
-    Przykład:
-        TOP10 #123
-        1. Wykonawca - Tytuł
-
-    Obsługiwane:
-        TOP10 #123
-        TOP 10 #123
-        TOP15 #123
-        TOP 15 #123
-        TOP20 #123
-        TOP 20 #123
-
-    Ważne:
-    - NIE zapisujemy ponownie całej historii.
-    - Wybieramy najwyższy numer notowania (#123, #124 itd.).
-    - Z najnowszego notowania bierzemy tylko miejsce 1.
-    - W Firebase zachowujemy stare wpisy i dokładamy/aktualizujemy
-      tylko najnowsze notowanie.
-    """
     try:
-        print("ARCHIWUM: rozpoczynam skanowanie historii kanału...")
+        print(
+            "ARCHIWUM: rozpoczynam pobieranie "
+            "historii kanału..."
+        )
 
         cid = 1518213312234655825
-        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
 
-        if ch is None:
-            print(f"ARCHIWUM: nie znaleziono kanału {cid}")
-            return False
+        ch = (
+            bot.get_channel(cid)
+            or await bot.fetch_channel(cid)
+        )
 
-        print(f"ARCHIWUM: kanał {ch.name} ({ch.id})")
+        print(
+            f"ARCHIWUM: kanał "
+            f"{ch.name} ({ch.id})"
+        )
 
-        # Pobieramy historię, ponieważ numer notowania może być ukryty
-        # w starszej wiadomości. Niczego jednak nie zapisujemy poza
-        # NAJNOWSZYM znalezionym notowaniem.
-        messages = []
+        entries = []
         total_msgs = 0
 
-        async for msg in ch.history(limit=None, oldest_first=True):
+        async for msg in ch.history(limit=None):
             total_msgs += 1
-            if msg.content:
-                messages.append(msg.content)
 
-        print(f"ARCHIWUM: przeskanowano {total_msgs} wiadomości")
+            if not msg.content:
+                continue
 
-        top_pattern = re.compile(
-            r"^\s*TOP\s*(10|15|20)\s*#\s*(\d+)\b",
-            re.IGNORECASE
-        )
+            text = msg.content
 
-        first_pattern = re.compile(
-            r"^\s*1\s*[\.\)]?\s*(.*)$"
-        )
-
-        # Wszystkie znalezione notowania, ale tylko chwilowo w pamięci.
-        charts = {}
-        current_chart = None
-        waiting_for_winner = False
-
-        for content in messages:
-            content = re.sub(
+            text = re.sub(
                 r"\[([^\]]+)\]\([^)]+\)",
                 r"\1",
-                content
+                text
             )
 
-            for raw in content.splitlines():
+            text = re.sub(
+                r"https?://\S+",
+                "",
+                text
+            )
+
+            for raw in text.splitlines():
                 raw = raw.strip()
+
                 if not raw:
                     continue
 
-                top_match = top_pattern.match(raw)
-                if top_match:
-                    top_size = int(top_match.group(1))
-                    chart_number = int(top_match.group(2))
+                upper = raw.upper()
 
-                    current_chart = {
-                        "numer": chart_number,
-                        "top": top_size,
-                        "winner": None
-                    }
-                    charts[chart_number] = current_chart
-                    waiting_for_winner = False
-
-                    print(
-                        f"ARCHIWUM: znaleziono nagłówek "
-                        f"TOP{top_size} #{chart_number}"
-                    )
+                if (
+                    upper.startswith("TOP 10")
+                    or "LISTA PRZEBOJÓW" in upper
+                    or raw.startswith("🏆")
+                ):
                     continue
 
-                if current_chart is None:
+                raw_no_num = re.sub(
+                    r"^\s*\d+[\.\)]?\s*",
+                    "",
+                    raw
+                ).strip()
+
+                if not raw_no_num:
                     continue
 
-                # Po znalezieniu 1. nie interesuje nas absolutnie nic
-                # więcej z tego notowania.
-                if current_chart.get("winner"):
-                    continue
+                parts = re.split(
+                    r"\s{2,}|\t+",
+                    raw_no_num
+                )
 
-                first_match = first_pattern.match(raw)
-                if first_match:
-                    winner = first_match.group(1).strip()
+                if len(parts) >= 2:
+                    wykonawca = parts[0].strip()
+                    tytul = parts[1].strip()
 
-                    if winner:
-                        current_chart["winner"] = winner
-                        waiting_for_winner = False
-                        print(
-                            f"ARCHIWUM: #{current_chart['numer']} "
-                            f"→ 1. {winner}"
-                        )
-                    else:
-                        # Obsługa układu:
-                        # 1.
-                        # Wykonawca - Tytuł
-                        waiting_for_winner = True
-
-                    continue
-
-                if waiting_for_winner:
-                    # Jeżeli następna linia jest kolejnym numerem,
-                    # nie zgadujemy utworu.
-                    if re.match(r"^\s*\d+\s*[\.\)]?", raw):
-                        waiting_for_winner = False
-                        continue
-
-                    current_chart["winner"] = raw
-                    waiting_for_winner = False
-                    print(
-                        f"ARCHIWUM: #{current_chart['numer']} "
-                        f"→ 1. {raw}"
-                    )
-
-        if not charts:
-            print("ARCHIWUM: nie znaleziono żadnego TOP10/TOP15/TOP20 z numerem #")
-            return False
-
-        # ============================================================
-        # TYLKO NAJNOWSZE NOTOWANIE
-        # ============================================================
-        latest_number = max(charts.keys())
-        latest = charts[latest_number]
-        winner = latest.get("winner")
+                    if wykonawca and tytul:
+                        entries.append({
+                            "wykonawca": wykonawca,
+                            "tytul": tytul
+                        })
 
         print(
-            f"ARCHIWUM: NAJNOWSZE NOTOWANIE = "
-            f"TOP{latest['top']} #{latest_number}"
+            f"ARCHIWUM: przeskanowano "
+            f"{total_msgs} wiadomości, "
+            f"znaleziono {len(entries)} "
+            f"wpisów przed dedup"
         )
 
-        if not winner:
-            print(
-                f"ARCHIWUM: #{latest_number} — "
-                f"nie znaleziono miejsca 1. "
-                f"NIE aktualizuję Firebase."
+        unique = {}
+        display_entries = []
+
+        for entry in entries:
+            wykonawca = entry["wykonawca"].strip()
+            tytul = entry["tytul"].strip()
+
+            key = (
+                re.sub(
+                    r"\s+",
+                    " ",
+                    wykonawca
+                ).lower(),
+
+                re.sub(
+                    r"\s+",
+                    " ",
+                    tytul
+                ).lower()
             )
-            return False
 
-        # Rozbicie zwycięzcy na wykonawcę i tytuł.
-        wykonawca = ""
-        tytul = ""
+            if key not in unique:
+                unique[key] = True
 
-        if " - " in winner:
-            wykonawca, tytul = winner.split(" - ", 1)
-        else:
-            parts = re.split(r"\s{2,}|\t+", winner)
-            if len(parts) >= 2:
-                wykonawca = parts[0].strip()
-                tytul = parts[1].strip()
-            else:
-                tytul = winner.strip()
+                display_entries.append({
+                    "wykonawca": wykonawca,
+                    "tytul": tytul
+                })
 
-        latest_entry = {
-            "notowanie": latest_number,
-            "miejsce": 1,
-            "top": latest["top"],
-            "wykonawca": wykonawca.strip(),
-            "tytul": tytul.strip(),
-            "tekst": winner.strip()
-        }
-
-        # ============================================================
-        # FIREBASE — ZMIENIAMY TYLKO NAJNOWSZE NOTOWANIE
-        # ============================================================
-        doc_ref = db.collection("archiwum").document("utwory")
-        current_doc = doc_ref.get()
-
-        existing_entries = []
-        if current_doc.exists:
-            data = current_doc.to_dict() or {}
-            raw_entries = data.get("utwory", [])
-            if isinstance(raw_entries, list):
-                existing_entries = raw_entries
-
-        # Usuwamy ewentualny stary wpis tego samego numeru #,
-        # a następnie dokładamy tylko aktualny.
-        updated_entries = []
-        replaced = False
-
-        for entry in existing_entries:
-            if not isinstance(entry, dict):
-                continue
-
-            try:
-                entry_number = int(entry.get("notowanie"))
-            except (TypeError, ValueError):
-                entry_number = None
-
-            if entry_number == latest_number:
-                if not replaced:
-                    updated_entries.append(latest_entry)
-                    replaced = True
-                # kolejnego duplikatu tego samego # już nie dodajemy
-            else:
-                updated_entries.append(entry)
-
-        if not replaced:
-            updated_entries.append(latest_entry)
-
-        # Sortowanie po numerze notowania dla czytelności.
-        updated_entries.sort(
-            key=lambda x: int(x.get("notowanie", 0))
-            if str(x.get("notowanie", "")).isdigit()
-            else 0
+        print(
+            f"ARCHIWUM: po usunięciu duplikatów "
+            f"{len(display_entries)} utworów"
         )
 
-        # Jeżeli najnowszy wpis jest identyczny jak już zapisany,
-        # nie wykonujemy niepotrzebnego zapisu.
-        already_same = False
-        for entry in existing_entries:
-            if isinstance(entry, dict):
-                try:
-                    if int(entry.get("notowanie")) == latest_number:
-                        compare_keys = (
-                            "notowanie",
-                            "miejsce",
-                            "top",
-                            "wykonawca",
-                            "tytul",
-                            "tekst"
-                        )
-                        already_same = all(
-                            entry.get(k) == latest_entry.get(k)
-                            for k in compare_keys
-                        )
-                        break
-                except (TypeError, ValueError):
-                    pass
-
-        if already_same:
+        if len(display_entries) == 0:
             print(
-                f"ARCHIWUM: #{latest_number} już jest w Firebase "
-                f"i nie wymaga aktualizacji."
+                "ARCHIWUM: 0 utworów - "
+                "nie nadpisuje Firebase!"
             )
-            return True
+            return
 
-        doc_ref.set({
-            "utwory": updated_entries,
-            "count": len(updated_entries),
-            "updated_at": firestore.SERVER_TIMESTAMP,
-            "last_notowanie": latest_number,
-            "last_miejsce": 1
-        }, merge=True)
+        db.collection("archiwum").document(
+            "utwory"
+        ).set({
+            "utwory": display_entries,
+            "count": len(display_entries),
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
 
         print(
-            f"ARCHIWUM: AKTUALIZACJA TYLKO NOWEGO WPISU "
-            f"#{latest_number} → 1. {winner}"
+            f"ARCHIWUM: ZAPISANO "
+            f"{len(display_entries)} utworów "
+            f"do archiwum/utwory"
         )
-        print(
-            f"ARCHIWUM: w Firebase pozostaje łącznie "
-            f"{len(updated_entries)} zwycięzców"
-        )
-
-        return True
 
     except Exception as e:
         print(
             f"ERROR archiwum: "
             f"{type(e).__name__}: {e}"
         )
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-ARCHIWUM_SYSTEM_DOC = "_system_weekly_archive_sync"
-
-
-@tasks.loop(seconds=30)
-async def check_archiwum_weekly():
-    """
-    Uruchamia synchronizację archiwum tylko raz w tygodniu:
-    PONIEDZIAŁEK.
-
-    Po poprawnym skanowaniu zapisuje numer tygodnia.
-    Dzięki temu bot może sprawdzać warunek co 30 sekund,
-    ale samo archiwum zostanie pobrane tylko raz.
-    """
-    try:
-        now = datetime.now(WARSAW)
-
-        week_key = now.strftime("%Y-%m-%d")
-
-        system_ref = (
-            db.collection("archiwum")
-            .document(ARCHIWUM_SYSTEM_DOC)
-        )
-
-        system_doc = system_ref.get()
-        system_data = system_doc.to_dict() if system_doc.exists else {}
-
-        last_sync_week = system_data.get("last_sync_week")
-
-        # ------------------------------------------------------------
-        # PIERWSZE URUCHOMIENIE:
-        # wykonaj od razu, niezależnie od dnia tygodnia.
-        # Dzięki temu można sprawdzić archiwum natychmiast po wdrożeniu.
-        # ------------------------------------------------------------
-        if not system_data.get("initialized"):
-            print(
-                "ARCHIWUM: pierwsze uruchomienie — "
-                "wykonuję testowy pełny skan TERAZ."
-            )
-
-            success = await sync_archiwum()
-
-            if not success:
-                print(
-                    "ARCHIWUM: pierwszy skan nieudany — "
-                    "spróbuję ponownie za 30 sekund."
-                )
-                return
-
-            system_ref.set({
-                "initialized": True,
-                "initialized_at": firestore.SERVER_TIMESTAMP,
-                "last_sync_week": week_key,
-                "last_sync_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-
-            print(
-                "ARCHIWUM: pierwszy skan zakończony pomyślnie."
-            )
-            return
-
-        # ------------------------------------------------------------
-        # NORMALNA PRACA:
-        # kolejne skany tylko w poniedziałek i tylko raz w tygodniu.
-        # ------------------------------------------------------------
-        if now.weekday() != 0:
-            return
-
-        if last_sync_week == week_key:
-            return
-
-        print(
-            f"ARCHIWUM: poniedziałkowa synchronizacja "
-            f"dla {week_key}"
-        )
-
-        success = await sync_archiwum()
-
-        if not success:
-            print(
-                "ARCHIWUM: synchronizacja nieudana — "
-                "spróbuję ponownie za 30 sekund."
-            )
-            return
-
-        system_ref.set({
-            "last_sync_week": week_key,
-            "last_sync_at": firestore.SERVER_TIMESTAMP
-        }, merge=True)
-
-        print(
-            "ARCHIWUM: poniedziałkowa synchronizacja "
-            "zakończona i oznaczona jako wykonana."
-        )
-
-    except Exception as e:
-        print(
-            f"ERROR archiwum weekly checker: "
-            f"{type(e).__name__}: {e}"
-        )
-        import traceback
-        traceback.print_exc()
 
 
 # ============================================================
@@ -1600,67 +1361,14 @@ async def on_ready():
         "TEST: KONIEC sync_members()"
     )
 
-    # ========================================================
-    # ARCHIWUM
-    #
-    # PIERWSZE URUCHOMIENIE:
-    # sprawdzamy NATYCHMIAST w on_ready(), zamiast czekać
-    # na pierwsze wykonanie pętli tasks.loop.
-    #
-    # KOLEJNE URUCHOMIENIA:
-    # check_archiwum_weekly pilnuje synchronizacji tylko
-    # raz w poniedziałek.
-    # ========================================================
-
-    archive_system_ref = (
-        db.collection("archiwum")
-        .document(ARCHIWUM_SYSTEM_DOC)
+    print(
+        "TEST: START sync_archiwum()"
     )
 
-    archive_system_doc = archive_system_ref.get()
-    archive_system_data = (
-        archive_system_doc.to_dict()
-        if archive_system_doc.exists
-        else {}
-    )
-
-    if not archive_system_data.get("initialized"):
-        print(
-            "ARCHIWUM: PIERWSZE URUCHOMIENIE — "
-            "skanuję TERAZ."
-        )
-
-        archive_success = await sync_archiwum()
-
-        if archive_success:
-            now_archive = datetime.now(WARSAW)
-            archive_week_key = now_archive.strftime("%Y-%m-%d")
-
-            archive_system_ref.set({
-                "initialized": True,
-                "initialized_at": firestore.SERVER_TIMESTAMP,
-                "last_sync_week": archive_week_key,
-                "last_sync_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-
-            print(
-                "ARCHIWUM: PIERWSZY ZAPIS DO FIREBASE "
-                "ZAKOŃCZONY."
-            )
-        else:
-            print(
-                "ARCHIWUM: PIERWSZY SKAN NIEUDANY — "
-                "nie ustawiam initialized. "
-                "Bot spróbuje ponownie po restarcie."
-            )
-
-    if not check_archiwum_weekly.is_running():
-        check_archiwum_weekly.start()
+    await sync_archiwum()
 
     print(
-        "ARCHIWUM: tygodniowy system aktywny "
-        "— pierwszy zapis wykonany przy starcie, "
-        "potem sprawdzanie tylko w poniedziałek"
+        "TEST: KONIEC sync_archiwum()"
     )
 
     print(
