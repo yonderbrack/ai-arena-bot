@@ -81,8 +81,7 @@ WARSAW = ZoneInfo("Europe/Warsaw")
 @tasks.loop(seconds=30)
 async def check_lista():
     now = datetime.now(WARSAW)
-    # LIVE jest PN/WT/CZW/ND 19:30-20:15 - lista musi sie aktualizowac w te dni, nie tylko WT/SR/CZW
-    is_active_day = now.weekday() in [0, 1, 3, 6]  # PN, WT, CZW, ND
+    is_active_day = now.weekday() in [0, 1, 3, 6]  # PN/WT/CZW/ND - FIX LIVE
     if not is_active_day:
         return
     try:
@@ -436,9 +435,11 @@ async def sync_members():
 
 # BACKUP LOOP - pełny sync co 6h, a nie co chwilę
 @tasks.loop(hours=6)
+async @tasks.loop(hours=6)
 async def sync_members_loop():
     print("CZŁONKOWIE: backup sync co 6h - start")
     await sync_members()
+
 
 @bot.event
 async def on_member_join(member):
@@ -458,9 +459,11 @@ async def on_member_join(member):
             "avatar": str(member.display_avatar.url) if member.display_avatar else "",
             "joined_at": firestore.SERVER_TIMESTAMP,
             "joined_at_iso": datetime.now(timezone.utc).isoformat(),
+            "active": True,
         }, merge=True)
     except Exception as e:
         print(f"ERROR on_member_join: {e}")
+
 
 @bot.event
 async def on_member_update(before, after):
