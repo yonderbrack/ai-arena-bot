@@ -48,6 +48,13 @@ bot = commands.Bot(
 RECOVERY_TIMEOUT_MINUTES = 10
 RECOVERY_COLLECTION = "pin_recovery"
 
+# ============================================================
+# FRANC GADA - FRANC/ANDY NAGRYWAJA -> FIREBASE MP3 -> BOT PULSUJE W APCE
+# ============================================================
+FRANC_GADA_COLLECTION = "MP3"
+FRANC_GADA_SYSTEM_DOC = "_system_franc_gada_bot"
+FRANC_GADA_ANNOUNCE_CHANNEL_ID = os.getenv("FRANC_GADA_ANNOUNCE_CHANNEL_ID") or os.getenv("FRANC_GADA_CHANNEL_ID") or "1517600000000000000"
+
 
 # ============================================================
 # POMOCNICZE — HASH PIN
@@ -210,6 +217,85 @@ async def check_glosowanie_link():
 
     except Exception as e:
         print(f"ERROR glosowanie_link: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# ============================================================
+# FRANC GADA - NOWE - FRANC/ANDY NAGRYWA W APCE -> MP3 -> BOT OGŁASZA
+# ============================================================
+
+@tasks.loop(seconds=15)
+async def check_franc_gada():
+    """
+    FRANC lub ANDY nagrywają wiadomość w apce REC INFO -> MP3 -> Firebase
+    Bot wykrywa nowy dokument w MP3 i ogłasza na Discord + apka sama pulsuje FRANC GADA
+    """
+    try:
+        coll = db.collection(FRANC_GADA_COLLECTION)
+        docs = coll.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+        latest = None
+        for d in docs:
+            latest = d
+            break
+
+        if latest is None:
+            return
+
+        data = latest.to_dict() or {}
+        ts = data.get("timestamp") or 0
+        try:
+            ts = int(ts)
+        except:
+            ts = 0
+
+        if ts == 0:
+            return
+
+        sys_ref = db.collection(FRANC_GADA_COLLECTION).document(FRANC_GADA_SYSTEM_DOC)
+        sys_doc = sys_ref.get()
+        last_announced_ts = 0
+        if sys_doc.exists:
+            last_announced_ts = int((sys_doc.to_dict() or {}).get("last_announced_ts") or 0)
+
+        if ts <= last_announced_ts:
+            return
+
+        author = data.get("author") or "FRANC"
+        duration = data.get("durationSec") or 0
+
+        print(f"FRANC GADA: NOWA WIADOMOSC {latest.id} od {author} ts={ts} duration={duration}s -> PULSUJE W APCE")
+
+        # Ogloszenie na Discord (opcjonalnie)
+        try:
+            cid_raw = FRANC_GADA_ANNOUNCE_CHANNEL_ID
+            if cid_raw and cid_raw != "1517600000000000000":
+                cid = int(cid_raw)
+                ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+                if ch is not None:
+                    embed = discord.Embed(
+                        title="🎤 FRANC GADA! NOWA WIADOMOSC!",
+                        description=f"**{author}** nagral nowa wiadomosc glosowa w apce AI Arena FM!",
+                        color=0xFFD700
+                    )
+                    embed.add_field(name="Autor", value=author, inline=True)
+                    embed.add_field(name="Czas", value=f"{duration}s" if duration else "—", inline=True)
+                    embed.add_field(name="Co zrobic?", value="Otworz apke AI Arena FM -> kliknij pulsujace FRANC GADA zeby odtworzyc!", inline=False)
+                    embed.set_footer(text=f"ID: {latest.id} • {datetime.now(WARSAW).strftime('%d.%m.%Y %H:%M')}")
+                    await ch.send(content="@everyone 🎙️ FRANC GADA! Sprawdz apke!", embed=embed)
+                    print(f"FRANC GADA: wyslano ogloszenie na kanal {cid}")
+        except Exception as e:
+            print(f"FRANC GADA: blad wysylki Discord: {e}")
+
+        sys_ref.set({
+            "last_announced_ts": ts,
+            "last_announced_id": latest.id,
+            "last_announced_at": firestore.SERVER_TIMESTAMP,
+            "last_author": author
+        }, merge=True)
+
+    except Exception as e:
+        print(f"ERROR FRANC GADA: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1767,7 +1853,7 @@ async def odzyskaj_test(ctx):
 
 
 # ============================================================
-# START - DODANY check_glosowanie_link + check_typy_cleanup
+# START - DODANY check_glosowanie_link + check_typy_cleanup + check_franc_gada
 # ============================================================
 
 @bot.event
@@ -1792,6 +1878,9 @@ async def on_ready():
 
     if not check_hall_of_fame.is_running():
         check_hall_of_fame.start()
+
+    if not check_franc_gada.is_running():
+        check_franc_gada.start()
 
     print(
         "TEST: START sync_members()"
@@ -1837,6 +1926,10 @@ async def on_ready():
 
     print(
         "HALL OF FAME: aktywny - raz wszystkie przy starcie, potem tylko poniedziałek ostatnie"
+    )
+
+    print(
+        "FRANC GADA: aktywny - FRANC/ANDY nagrywa w apce -> MP3 -> pulsuje w apce + oglasza na Discord"
     )
 
 
