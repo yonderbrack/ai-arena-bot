@@ -359,7 +359,7 @@ async def check_typy_cleanup():
                 "description": "Automatyczne czyszczenie starych typów."
             }, merge=True)
             return
-        if now.weekday() != 0 or now.hour < 6 or cleanup_week == current_week_key:
+        if now.weekday() != 0 or now.hour < 12 or cleanup_week == current_week_key:
             return
         print(f"TYPY: rozpoczęto cotygodniowe czyszczenie dla tygodnia {current_week_key}.")
         deleted_count = cleanup_old_typy(current_week_start)
@@ -694,7 +694,7 @@ async def sync_hall_of_fame_latest():
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         if ch is None:
             print(f"HOF: nie znaleziono kanału {cid}")
-            return
+            return False
         async for msg in ch.history(limit=150):
             if not msg.content:
                 continue
@@ -733,12 +733,13 @@ async def sync_hall_of_fame_latest():
                 existing = doc_snap.to_dict() or {}
                 if existing.get("youtubeId"):
                     print(f"HALL OF FAME: {doc_id} już istnieje - nie ma nowego")
-                    return
+                    return False
                 else:
                     if youtubeUrl:
                         doc_snap.reference.set({"youtubeId": youtubeId, "youtubeUrl": youtubeUrl, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
                         print(f"HALL OF FAME: UZUPEŁNIONO YT dla {doc_id}")
-                    return
+                        return True
+                    return False
             clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", found_line)
             clean = re.sub(r"https?://\S+", "", clean)
             clean = re.sub(r"^\s*1(?!\d)[\.\).]?\s*", "", clean).strip()
@@ -769,12 +770,14 @@ async def sync_hall_of_fame_latest():
                 "updated_at": firestore.SERVER_TIMESTAMP
             })
             print(f"HALL OF FAME: ZAPISANO NOWE {doc_id} (TOP {top_size}): {wykonawca} - {tytul}")
-            return
+            return True
         print("HALL OF FAME: nie znaleziono nowego miejsca nr 1")
+        return False
     except Exception as e:
         print(f"ERROR HOF LATEST: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
 async def sync_hall_of_fame_initial():
     try:
@@ -801,7 +804,7 @@ async def sync_hall_of_fame_initial():
 async def check_hall_of_fame():
     try:
         now = datetime.now(WARSAW)
-        if now.weekday() != 0 or now.hour < 12:
+        if now.weekday() != 0 or now.hour < 6:
             return
         week_key = now.strftime("%Y-%W")
         sys_ref = db.collection(HALL_OF_FAME_COLLECTION).document(HALL_OF_FAME_SYSTEM_DOC)
@@ -811,9 +814,13 @@ async def check_hall_of_fame():
             data = sys_doc.to_dict() or {}
         if data.get("last_week") == week_key:
             return
-        print(f"HALL OF FAME: poniedziałkowe sprawdzenie {week_key}")
-        await sync_hall_of_fame_latest()
-        sys_ref.set({"last_week": week_key, "last_check": firestore.SERVER_TIMESTAMP}, merge=True)
+        print(f"HALL OF FAME: poniedziałkowe sprawdzenie {week_key} (od 06:00)")
+        success = await sync_hall_of_fame_latest()
+        if success:
+            sys_ref.set({"last_week": week_key, "last_check": firestore.SERVER_TIMESTAMP}, merge=True)
+            print(f"HALL OF FAME: sprawdzenie zakończone sukcesem — tydzień {week_key} oznaczony jako wykonany")
+        else:
+            print("HALL OF FAME: nie znaleziono nowego #1 — ponowię sprawdzenie za 30 minut")
     except Exception as e:
         print(f"ERROR HOF checker: {type(e).__name__}: {e}")
         import traceback
@@ -1082,4 +1089,3 @@ async def on_ready():
     print("CZŁONKOWIE: system na żywo (on_member_join/update) + backup co 6h aktywny")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
-
