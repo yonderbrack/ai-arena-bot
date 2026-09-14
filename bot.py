@@ -435,7 +435,6 @@ async def sync_members():
 
 # BACKUP LOOP - pełny sync co 6h, a nie co chwilę
 @tasks.loop(hours=6)
-async @tasks.loop(hours=6)
 async def sync_members_loop():
     print("CZŁONKOWIE: backup sync co 6h - start")
     await sync_members()
