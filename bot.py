@@ -359,7 +359,7 @@ async def check_typy_cleanup():
                 "description": "Automatyczne czyszczenie starych typów."
             }, merge=True)
             return
-        if now.weekday() != 0 or now.hour < 12 or cleanup_week == current_week_key:
+        if now.weekday() != 0 or now.hour < 6 or cleanup_week == current_week_key:
             return
         print(f"TYPY: rozpoczęto cotygodniowe czyszczenie dla tygodnia {current_week_key}.")
         deleted_count = cleanup_old_typy(current_week_start)
