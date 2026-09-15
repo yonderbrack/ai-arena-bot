@@ -51,6 +51,7 @@ bot = commands.Bot(
 
 RECOVERY_TIMEOUT_MINUTES = 10
 RECOVERY_COLLECTION = "pin_recovery"
+RECOVERY_DEBOUNCE_SECONDS = 120  # nie wysylaj DM czesciej niz co 2 minuty do tej samej osoby
 
 # ============================================================
 # FRANC GADA - FRANC/ANDY NAGRYWAJA -> FIREBASE MP3 -> BOT PULSUJE W APCE
@@ -396,7 +397,6 @@ async def sync_members():
         batch_count = 0
         saved_count = 0
         for member in members:
-            # IGNORUJ BOTY
             if member.bot:
                 continue
             doc_ref = collection.document(str(member.id))
@@ -408,7 +408,6 @@ async def sync_members():
                     "username_lower": member.name.lower(),
                     "display_name": member.display_name,
                     "display_name_lower": member.display_name.lower(),
-                    # dla kompatybilności z apką która szuka po "nick"
                     "nick": member.display_name,
                     "nick_lower": member.display_name.lower(),
                     "discordName": member.display_name,
@@ -433,7 +432,6 @@ async def sync_members():
         import traceback
         traceback.print_exc()
 
-# BACKUP LOOP - pełny sync co 6h, a nie co chwilę
 @tasks.loop(hours=6)
 async def sync_members_loop():
     print("CZŁONKOWIE: backup sync co 6h - start")
@@ -495,7 +493,6 @@ async def on_member_remove(member):
     except Exception as e:
         print(f"ERROR on_member_remove: {e}")
 
-# Komenda manualna do wymuszenia syncu
 @bot.command(name="sync")
 @commands.has_permissions(administrator=True)
 async def sync_cmd(ctx):
@@ -828,7 +825,7 @@ async def check_hall_of_fame():
 
 
 # ============================================================
-# ODZYSKIWANIE PIN
+# ODZYSKIWANIE PIN - FIX ANTY-SPAM
 # ============================================================
 
 async def create_recovery_request(discord_id: int, nick: str, source: str = "app"):
@@ -837,14 +834,46 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
         now = datetime.now(timezone.utc)
         expires = now + timedelta(minutes=RECOVERY_TIMEOUT_MINUTES)
         recovery_ref = db.collection(RECOVERY_COLLECTION).document(discord_id_str)
+        
+        # ANTY-SPAM: sprawdz czy nie wysylalismy DM w ostatnich 2 minutach
+        try:
+            existing = recovery_ref.get()
+            if existing.exists:
+                edata = existing.to_dict() or {}
+                last_sent = edata.get("lastDmSentAt") or edata.get("sentAt")
+                if last_sent:
+                    last_dt = None
+                    if isinstance(last_sent, (int, float)):
+                        # jesli timestamp w ms
+                        if last_sent > 1e12:
+                            last_dt = datetime.fromtimestamp(last_sent/1000, tz=timezone.utc)
+                        else:
+                            last_dt = datetime.fromtimestamp(last_sent, tz=timezone.utc)
+                    else:
+                        last_dt = last_sent
+                        if last_dt and last_dt.tzinfo is None:
+                            last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if last_dt:
+                        diff = (now - last_dt).total_seconds()
+                        if diff < RECOVERY_DEBOUNCE_SECONDS:
+                            print(f"RECOVERY: ANTY-SPAM pomijam {discord_id} - DM wyslano {int(diff)}s temu (limit {RECOVERY_DEBOUNCE_SECONDS}s)")
+                            # upewnij sie ze status to WAITING, zeby nie wracalo do PENDING
+                            recovery_ref.set({"status": "WAITING_CONFIRMATION"}, merge=True)
+                            return True
+        except Exception as e:
+            print(f"RECOVERY: blad anty-spam check: {e}")
+
+        # Ustaw od razu WAITING + lastDmSentAt zeby zablokowac kolejne wywolania
         recovery_ref.set({
             "discordId": discord_id_str,
             "nick": nick,
             "status": "WAITING_CONFIRMATION",
             "source": source,
             "createdAt": firestore.SERVER_TIMESTAMP,
-            "expiresAt": expires
-        })
+            "expiresAt": expires,
+            "lastDmSentAt": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+
         user = bot.get_user(discord_id)
         if user is None:
             try:
@@ -871,26 +900,46 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
             return False
     except Exception as e:
         print(f"ERROR recovery request: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=10)
 async def check_recovery_requests():
     try:
         collection = db.collection(RECOVERY_COLLECTION)
-        docs = collection.where("status", "==", "PENDING").stream()
+        # TYLKO PENDING - juz nie bedzie spamowac WAITING
+        docs = list(collection.where("status", "==", "PENDING").stream())
+        if not docs:
+            return
+        print(f"RECOVERY: znaleziono {len(docs)} zadan PENDING")
         for doc in docs:
-            data = doc.to_dict()
+            data = doc.to_dict() or {}
             discord_id = str(data.get("discordId") or doc.id)
             nick = str(data.get("nick") or "").strip()
             if not discord_id or not nick:
                 print(f"RECOVERY: błędne żądanie {doc.id}")
                 doc.reference.set({"status": "ERROR", "error": "Brak discordId lub nick"}, merge=True)
                 continue
-            success = await create_recovery_request(int(discord_id), nick, source="app")
-            if success:
-                doc.reference.set({"status": "WAITING_CONFIRMATION"}, merge=True)
+            # LOCK - od razu zmien na WAITING zeby inne iteracje / inne instancje bota nie wyslaly duplikatu
+            doc.reference.set({
+                "status": "WAITING_CONFIRMATION", 
+                "processingAt": firestore.SERVER_TIMESTAMP,
+                "lastDmSentAt": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            
+            try:
+                discord_int = int(discord_id)
+            except:
+                print(f"RECOVERY: bledny discordId {discord_id}")
+                continue
+                
+            await create_recovery_request(discord_int, nick, source="app")
+            
     except Exception as e:
         print(f"ERROR recovery checker: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
 
 @bot.event
 async def on_message(message):
@@ -928,7 +977,8 @@ async def on_message(message):
                 "status": "WAITING_CONFIRMATION",
                 "source": "discord_dm",
                 "createdAt": firestore.SERVER_TIMESTAMP,
-                "expiresAt": expires
+                "expiresAt": expires,
+                "lastDmSentAt": firestore.SERVER_TIMESTAMP
             })
             await message.author.send(
                 "🔐 **AI ARENA FM — ODZYSKIWANIE PIN-U**\n\n"
@@ -944,10 +994,15 @@ async def on_message(message):
     is_expired = False
     if expires_at is not None:
         try:
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) > expires_at:
-                is_expired = True
+            if hasattr(expires_at, 'tzinfo'):
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > expires_at:
+                    is_expired = True
+            elif isinstance(expires_at, (int, float)):
+                exp_dt = datetime.fromtimestamp(expires_at/1000 if expires_at > 1e12 else expires_at, tz=timezone.utc)
+                if datetime.now(timezone.utc) > exp_dt:
+                    is_expired = True
         except Exception as e:
             print(f"RECOVERY: błąd sprawdzania wygaśnięcia: {e}")
     if is_expired or status in ("EXPIRED", "DONE", "ERROR", "DM_FAILED"):
@@ -978,7 +1033,8 @@ async def on_message(message):
                 "status": "WAITING_CONFIRMATION",
                 "source": "discord_dm",
                 "createdAt": firestore.SERVER_TIMESTAMP,
-                "expiresAt": expires
+                "expiresAt": expires,
+                "lastDmSentAt": firestore.SERVER_TIMESTAMP
             })
             await message.author.send(
                 "🔐 **AI ARENA FM — ODZYSKIWANIE PIN-U**\n\n"
@@ -1085,7 +1141,8 @@ async def on_ready():
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
 
-    print("RECOVERY: system odzyskiwania PIN aktywny")
+    print("RECOVERY: system odzyskiwania PIN aktywny - FIX ANTY-SPAM WLACZONY")
     print("CZŁONKOWIE: system na żywo (on_member_join/update) + backup co 6h aktywny")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
