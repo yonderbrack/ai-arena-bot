@@ -909,7 +909,28 @@ async def check_recovery_requests():
     try:
         collection = db.collection(RECOVERY_COLLECTION)
         # TYLKO PENDING - juz nie bedzie spamowac WAITING
-        docs = list(collection.where("status", "==", "PENDING").stream())
+        # bierzemy PENDING + ewentualne zaciete SENDING starsze niz 2 min
+        docs_pending = list(collection.where("status", "==", "PENDING").stream())
+        docs_sending = []
+        try:
+            # jesli SENDING wisi > 3 min to znaczy ze poprzednie wysylanie sie wywalilo
+            old_sending = collection.where("status", "==", "SENDING").stream()
+            for d in old_sending:
+                dd = d.to_dict() or {}
+                proc = dd.get("processingAt")
+                if proc:
+                    try:
+                        now = datetime.now(timezone.utc)
+                        if hasattr(proc, "tzinfo"):
+                            if proc.tzinfo is None:
+                                proc = proc.replace(tzinfo=timezone.utc)
+                            if (now - proc).total_seconds() > 180:
+                                docs_sending.append(d)
+                    except:
+                        docs_sending.append(d)
+        except Exception:
+            pass
+        docs = docs_pending + docs_sending
         if not docs:
             return
         print(f"RECOVERY: znaleziono {len(docs)} zadan PENDING")
@@ -921,11 +942,10 @@ async def check_recovery_requests():
                 print(f"RECOVERY: błędne żądanie {doc.id}")
                 doc.reference.set({"status": "ERROR", "error": "Brak discordId lub nick"}, merge=True)
                 continue
-            # LOCK - od razu zmien na WAITING zeby inne iteracje / inne instancje bota nie wyslaly duplikatu
+            # LOCK - ustaw na SENDING zeby zablokowac inne instancje, lastDmSentAt dopiero po wyslaniu
             doc.reference.set({
-                "status": "WAITING_CONFIRMATION", 
-                "processingAt": firestore.SERVER_TIMESTAMP,
-                "lastDmSentAt": firestore.SERVER_TIMESTAMP
+                "status": "SENDING", 
+                "processingAt": firestore.SERVER_TIMESTAMP
             }, merge=True)
             
             try:
