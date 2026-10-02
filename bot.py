@@ -13,7 +13,6 @@ from discord.ext import commands, tasks
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-
 # ============================================================
 # FIREBASE
 # ============================================================
@@ -30,7 +29,6 @@ else:
 
 db = firestore.client()
 
-
 # ============================================================
 # DISCORD
 # ============================================================
@@ -44,14 +42,13 @@ bot = commands.Bot(
     intents=intents
 )
 
-
 # ============================================================
 # USTAWIENIA ODZYSKIWANIA PIN
 # ============================================================
 
 RECOVERY_TIMEOUT_MINUTES = 10
 RECOVERY_COLLECTION = "pin_recovery"
-RECOVERY_DEBOUNCE_SECONDS = 300  # FIX: 5 minut, nie 2 minuty
+RECOVERY_DEBOUNCE_SECONDS = 300
 
 # ============================================================
 # FRANC GADA
@@ -60,7 +57,6 @@ FRANC_GADA_COLLECTION = "MP3"
 FRANC_GADA_SYSTEM_DOC = "_system_franc_gada_bot"
 FRANC_GADA_ANNOUNCE_CHANNEL_ID = os.getenv("FRANC_GADA_ANNOUNCE_CHANNEL_ID") or os.getenv("FRANC_GADA_CHANNEL_ID") or "1517600000000000000"
 
-
 # ============================================================
 # POMOCNICZE — HASH PIN
 # ============================================================
@@ -68,42 +64,61 @@ FRANC_GADA_ANNOUNCE_CHANNEL_ID = os.getenv("FRANC_GADA_ANNOUNCE_CHANNEL_ID") or 
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
-
 # ============================================================
-# LISTA UTWORÓW
+# LISTA UTWORÓW - FIX
 # ============================================================
 
 WARSAW = ZoneInfo("Europe/Warsaw")
 
+def get_full_text_from_msg(msg):
+    parts = []
+    if msg.content:
+        parts.append(msg.content)
+    for emb in msg.embeds:
+        if emb.title:
+            parts.append(emb.title)
+        if emb.description:
+            parts.append(emb.description)
+        for f in emb.fields:
+            if f.value:
+                parts.append(f.value)
+    return "\n".join(parts)
 
 @tasks.loop(seconds=30)
 async def check_lista():
     now = datetime.now(WARSAW)
-    is_active_day = now.weekday() in [0, 1, 3, 6]
-    if not is_active_day:
-        return
+    # FIX: Usuniety filtr weekday - ma dzialac CODZIENNIE
     try:
         cid_raw = os.getenv("CHANNEL_ID") or os.getenv("LISTA_CHANNEL_ID")
         if not cid_raw:
+            print("LISTA: brak CHANNEL_ID / LISTA_CHANNEL_ID")
             return
         cid = int(cid_raw)
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         if ch is None:
+            print(f"LISTA: nie znaleziono kanalu {cid}")
             return
 
         numbered = {}
-        async for msg in ch.history(limit=100):
-            if not msg.content:
+        async for msg in ch.history(limit=200):
+            full_text = get_full_text_from_msg(msg)
+            if not full_text:
                 continue
-            for raw in msg.content.split("\n"):
+
+            has_link_in_msg = bool(re.search(r"https?://\S+", full_text))
+
+            for raw in full_text.split("\n"):
                 raw = raw.strip()
                 if not raw:
                     continue
                 m = re.match(r"^\s*(\d+)\s*[\.\)]?\s*(.+)", raw)
                 if not m:
                     continue
-                if not re.search(r"https?://\S+", raw):
-                    continue
+                if not re.search(r"https?://\S+", full_text): # link moze byc w innej linijce tej samej wiadomosci
+                    # sprawdzamy czy w ogole wiadomosc ma link
+                    if not has_link_in_msg:
+                        continue
+
                 num = int(m.group(1))
                 if num < 1 or num > 100:
                     continue
@@ -111,7 +126,7 @@ async def check_lista():
                     numbered[num] = raw.strip()
 
         if len(numbered) < 5:
-            print("Nie znaleziono min 5 ponumerowanych")
+            print(f"LISTA: znaleziono tylko {len(numbered)} ponumerowanych - za malo")
             return
 
         sorted_nums = sorted(numbered.keys())
@@ -123,14 +138,13 @@ async def check_lista():
             "utwory": final_list,
             "count": len(final_list),
             "updated_at": firestore.SERVER_TIMESTAMP,
-            "updated_day": now.strftime("%A %H:%M:%S")
+            "updated_day": now.strftime("%d.%m.%Y %H:%M:%S")
         })
         print(f"ZAPISANO {len(final_list)} ponumerowanych 1-{sorted_nums[-1]}")
     except Exception as e:
         print(f"ERROR lista: {e}")
         import traceback
         traceback.print_exc()
-
 
 # ============================================================
 # LINKI DO GŁOSOWANIA
@@ -207,7 +221,6 @@ async def check_glosowanie_link():
         import traceback
         traceback.print_exc()
 
-
 # ============================================================
 # FRANC GADA
 # ============================================================
@@ -251,7 +264,7 @@ async def check_franc_gada():
 
         try:
             cid_raw = FRANC_GADA_ANNOUNCE_CHANNEL_ID
-            if cid_raw and cid_raw != "1517600000000000000":
+            if cid_raw and cid_raw!= "1517600000000000000":
                 cid = int(cid_raw)
                 ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
                 if ch is not None:
@@ -279,7 +292,6 @@ async def check_franc_gada():
         print(f"ERROR FRANC GADA: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-
 
 # ============================================================
 # TYPY — CZYSZCZENIE
@@ -357,7 +369,7 @@ async def check_typy_cleanup():
                 "description": "Automatyczne czyszczenie starych typów."
             }, merge=True)
             return
-        if now.weekday() != 0 or now.hour < 12 or cleanup_week == current_week_key:
+        if now.weekday()!= 0 or now.hour < 12 or cleanup_week == current_week_key:
             return
         print(f"TYPY: rozpoczęto cotygodniowe czyszczenie dla tygodnia {current_week_key}.")
         deleted_count = cleanup_old_typy(current_week_start)
@@ -370,7 +382,6 @@ async def check_typy_cleanup():
         print(f"ERROR typy cleanup checker: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-
 
 # ============================================================
 # CZŁONKOWIE
@@ -434,7 +445,6 @@ async def sync_members_loop():
     print("CZŁONKOWIE: backup sync co 6h - start")
     await sync_members()
 
-
 @bot.event
 async def on_member_join(member):
     try:
@@ -458,13 +468,12 @@ async def on_member_join(member):
     except Exception as e:
         print(f"ERROR on_member_join: {e}")
 
-
 @bot.event
 async def on_member_update(before, after):
     try:
         if after.bot:
             return
-        if before.display_name != after.display_name or before.name != after.name:
+        if before.display_name!= after.display_name or before.name!= after.name:
             print(f"CZŁONKOWIE: UPDATE nick {before.display_name} -> {after.display_name} ({after.id})")
             db.collection("czlonkowie").document(str(after.id)).set({
                 "username": after.name,
@@ -507,6 +516,12 @@ async def czlonkowie_count(ctx):
     except Exception as e:
         await ctx.send(f"❌ Błąd: {e}")
 
+@bot.command(name="lista_test")
+@commands.has_permissions(administrator=True)
+async def lista_test(ctx):
+    await ctx.send("🔄 Wymuszam check listy...")
+    await check_lista()
+    await ctx.send("✅ Sprawdź logi - lista powinna być zaktualizowana")
 
 # ============================================================
 # ARCHIWUM UTWORÓW
@@ -565,7 +580,6 @@ async def sync_archiwum():
         print(f"ARCHIWUM: ZAPISANO {len(display_entries)} utworów do archiwum/utwory")
     except Exception as e:
         print(f"ERROR archiwum: {type(e).__name__}: {e}")
-
 
 # ============================================================
 # HALL OF FAME
@@ -798,7 +812,7 @@ async def sync_hall_of_fame_initial():
 async def check_hall_of_fame():
     try:
         now = datetime.now(WARSAW)
-        if now.weekday() != 0 or now.hour < 6:
+        if now.weekday()!= 0 or now.hour < 6:
             return
         week_key = now.strftime("%Y-%W")
         sys_ref = db.collection(HALL_OF_FAME_COLLECTION).document(HALL_OF_FAME_SYSTEM_DOC)
@@ -820,24 +834,21 @@ async def check_hall_of_fame():
         import traceback
         traceback.print_exc()
 
-
 # ============================================================
 # ODZYSKIWANIE PIN - FIX ANTY-SPAM FINALNY
 # ============================================================
 
 def _parse_last_sent(last_sent):
-    """Zwraca datetime UTC albo None"""
     if last_sent is None:
         return None
     try:
         if isinstance(last_sent, (int, float)):
-            if last_sent > 1e12:  # ms
+            if last_sent > 1e12:
                 return datetime.fromtimestamp(last_sent/1000, tz=timezone.utc)
             else:
                 return datetime.fromtimestamp(last_sent, tz=timezone.utc)
-        # Firestore Timestamp lub datetime
         dt = last_sent
-        if hasattr(dt, 'to_datetime'):  # google.cloud.firestore_v1._helpers.DatetimeWithNanoseconds
+        if hasattr(dt, 'to_datetime'):
             dt = dt.to_datetime()
         if hasattr(dt, 'tzinfo'):
             if dt.tzinfo is None:
@@ -853,8 +864,7 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
         now = datetime.now(timezone.utc)
         expires = now + timedelta(minutes=RECOVERY_TIMEOUT_MINUTES)
         recovery_ref = db.collection(RECOVERY_COLLECTION).document(discord_id_str)
-        
-        # ANTY-SPAM: sprawdz czy nie wysylalismy DM w ostatnich 5 minutach
+
         try:
             existing = recovery_ref.get()
             if existing.exists:
@@ -870,7 +880,6 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
         except Exception as e:
             print(f"RECOVERY: blad anty-spam check: {e}")
 
-        # Zablokuj od razu inne instancje - ustaw WAITING + timestamp
         recovery_ref.set({
             "discordId": discord_id_str,
             "nick": nick,
@@ -928,7 +937,6 @@ async def check_recovery_requests():
                     if (datetime.now(timezone.utc) - last_dt).total_seconds() > 180:
                         docs_sending.append(d)
                 else:
-                    # jesli brak timestamp, traktuj jako zaciete
                     docs_sending.append(d)
         except Exception:
             pass
@@ -947,7 +955,6 @@ async def check_recovery_requests():
                 doc.reference.set({"status": "ERROR", "error": "Brak discordId lub nick"}, merge=True)
                 continue
 
-            # ANTY-SPAM drugi raz już w pętli - zanim ustawimy SENDING
             last_sent = data.get("lastDmSentAt") or data.get("lastDmSentAtMs") or data.get("sentAt")
             last_dt = _parse_last_sent(last_sent)
             if last_dt:
@@ -957,13 +964,12 @@ async def check_recovery_requests():
                     doc.reference.set({"status": "WAITING_CONFIRMATION"}, merge=True)
                     continue
 
-            # LOCK
             doc.reference.set({
-                "status": "SENDING", 
+                "status": "SENDING",
                 "processingAt": firestore.SERVER_TIMESTAMP,
                 "processingAtMs": int(datetime.now(timezone.utc).timestamp()*1000)
             }, merge=True)
-            
+
             await asyncio.sleep(1)
 
             try:
@@ -971,9 +977,9 @@ async def check_recovery_requests():
             except:
                 print(f"RECOVERY: bledny discordId {discord_id}")
                 continue
-                
+
             await create_recovery_request(discord_int, nick, source="app")
-            
+
     except Exception as e:
         print(f"ERROR recovery checker: {type(e).__name__}: {e}")
         import traceback
@@ -1001,7 +1007,7 @@ async def on_message(message):
             user_data = user_doc.to_dict()
             stored_discord_id = str(user_data.get("discordId") or user_data.get("discord_id") or "")
             nick = str(user_data.get("nick") or "").strip()
-            if stored_discord_id != discord_id:
+            if stored_discord_id!= discord_id:
                 await message.author.send("❌ To konto AI Arena FM nie jest jeszcze przypisane do tego konta Discord.")
                 return
             if not nick:
@@ -1052,7 +1058,7 @@ async def on_message(message):
             user_data = user_doc.to_dict()
             stored_discord_id = str(user_data.get("discordId") or user_data.get("discord_id") or "")
             nick = str(user_data.get("nick") or "").strip()
-            if stored_discord_id != discord_id:
+            if stored_discord_id!= discord_id:
                 await message.author.send("❌ To konto AI Arena FM nie jest jeszcze przypisane do tego konta Discord.")
                 return
             if not nick:
@@ -1102,7 +1108,7 @@ async def on_message(message):
                 return
             user_data = user_doc.to_dict()
             stored_discord_id = str(user_data.get("discordId") or user_data.get("discord_id") or "")
-            if stored_discord_id != discord_id:
+            if stored_discord_id!= discord_id:
                 recovery_ref.set({"status": "ERROR", "error": "Niezgodność discordId"}, merge=True)
                 await message.author.send("❌ Nie udało się zweryfikować Twojego konta.")
                 return
@@ -1128,7 +1134,7 @@ async def odzyskaj_test(ctx):
     user_data = user_doc.to_dict()
     stored_discord_id = str(user_data.get("discordId") or "")
     nick = str(user_data.get("nick") or "").strip()
-    if stored_discord_id != discord_id:
+    if stored_discord_id!= discord_id:
         await ctx.send("❌ Niezgodność discordId w Firebase.")
         return
     if not nick:
@@ -1140,14 +1146,13 @@ async def odzyskaj_test(ctx):
     else:
         await ctx.send("❌ Nie udało się wysłać wiadomości prywatnej.\nSprawdź, czy bot może wysyłać Ci DM.")
 
-
 # ============================================================
 # START
 # ============================================================
 
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - tryb WT/SR/CZW 00:00-23:59 (Warszawa)")
+    print(f"READY {bot.user} - tryb CODZIENNY FIX LISTA")
     if not check_lista.is_running():
         check_lista.start()
     if not check_glosowanie_link.is_running():
@@ -1179,4 +1184,3 @@ async def on_ready():
     print("CZŁONKOWIE: system na żywo + backup co 6h aktywny")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
-
