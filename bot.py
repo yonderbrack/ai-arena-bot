@@ -178,10 +178,33 @@ def _extract_tracks_from_html(html: str):
                         fav_count = int(mm.group())
                         break
 
-            # 3. Ostatecznie odczytaj zapis widoczny w karcie, np. „♥ 12” lub „❤ 12”.
+            # 3. Najpierw odczytaj dokładnie element wskazany w HTML strony:
+            # <span class="fav-count">15</span>
+            # Robimy to jawnie, zanim uznamy, że licznik ma wartość 0.
+            if fav_count is None:
+                fav_el = art.select_one("span.fav-count, .fav-count")
+                if fav_el is not None:
+                    fav_text = fav_el.get_text(" ", strip=True)
+                    mm = re.search(r"\d+", fav_text)
+                    if mm:
+                        fav_count = int(mm.group())
+
+            # 4. Ostatecznie odczytaj zapis widoczny w karcie, np. „♥ 12” lub „❤ 12”.
             if fav_count is None:
                 article_text = art.get_text(" ", strip=True)
                 mm = re.search(r"[♥❤♡]\s*(\d+)", article_text)
+                if mm:
+                    fav_count = int(mm.group(1))
+
+            # 5. Awaryjny odczyt z surowego HTML samej karty. Przydaje się,
+            # gdy parser HTML nie złoży elementu fav-count w oczekiwany sposób.
+            if fav_count is None:
+                raw_article = str(art)
+                mm = re.search(
+                    r'class=["\'][^"\']*\bfav-count\b[^"\']*["\'][^>]*>\s*(\d+)\s*<',
+                    raw_article,
+                    re.IGNORECASE,
+                )
                 if mm:
                     fav_count = int(mm.group(1))
 
@@ -1233,4 +1256,3 @@ async def on_ready():
     print("READY: BEZ FRANC GADA, YT OK, SERCA LIVE, 404 fix, HOF backfill")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
-
