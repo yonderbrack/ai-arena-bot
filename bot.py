@@ -1,4 +1,3 @@
-
 import os
 import json
 import base64
@@ -53,13 +52,6 @@ bot = commands.Bot(
 RECOVERY_TIMEOUT_MINUTES = 10
 RECOVERY_COLLECTION = "pin_recovery"
 RECOVERY_DEBOUNCE_SECONDS = 300
-
-# ============================================================
-# FRANC GADA
-# ============================================================
-FRANC_GADA_COLLECTION = "MP3"
-FRANC_GADA_SYSTEM_DOC = "_system_franc_gada_bot"
-FRANC_GADA_ANNOUNCE_CHANNEL_ID = os.getenv("FRANC_GADA_ANNOUNCE_CHANNEL_ID") or os.getenv("FRANC_GADA_CHANNEL_ID") or "1517600000000000000"
 
 # ============================================================
 # AI ARENA TOP 20 - WWW SCRAPER
@@ -120,7 +112,6 @@ def _parse_edycje_for_top20_urls(html: str):
                     urls.append((num, href.split("?")[0].split("#")[0]))
     except Exception as e:
         print(f"EDYCJE parse error: {e}")
-    # deduplicate by url keeping highest num
     uniq = {}
     for num, u in urls:
         if u not in uniq or num > uniq[u]:
@@ -139,46 +130,49 @@ def _extract_tracks_from_html(html: str):
             tytul = art.get("data-tytul") or art.get("data-title") or ""
             tworca = art.get("data-tworca") or art.get("data-artist") or ""
             if not tytul:
-                # fallback: search inside for title
-                # sometimes title in nested
                 continue
             no_el = art.find("span", class_=lambda c: c and "track-no" in c)
             try:
                 no = int(no_el.get_text(strip=True)) if no_el else idx + 1
             except:
                 no = idx + 1
-            if tytul.strip():
-                tracks.append((no, tytul.strip(), tworca.strip()))
+            youtube_url = ""
+            for a in art.find_all("a", href=True):
+                href = a["href"]
+                if "youtu.be" in href or "youtube.com" in href:
+                    youtube_url = href.strip()
+                    break
+            if not youtube_url:
+                for ifr in art.find_all("iframe", src=True):
+                    src = ifr["src"]
+                    if "youtube" in src or "youtu.be" in src:
+                        youtube_url = src.strip()
+                        break
+            if not youtube_url:
+                inner = str(art)
+                m = re.search(r'(https?://(?:www\.)?(?:youtu\.be/[^"\s<]+|youtube\.com/watch\?v=[^"\s<]+))', inner)
+                if m:
+                    youtube_url = m.group(1).rstrip('"\'')
+            tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip()))
     except Exception as e:
         print(f"EXTRACT BS4 error: {e}")
 
-    # fallback regex if BS4 found nothing - strona moze miec dane w html jako atrybuty
     if len(tracks) < 3:
         try:
-            pattern = re.compile(r'data-tytul="([^"]+)"[^>]*data-tworca="([^"]+)"', re.IGNORECASE)
-            matches = pattern.findall(html)
-            if matches:
-                # sprobuj tez wyciagnac numery track-no
-                no_pattern = re.compile(r'<span[^>]*class="[^"]*track-no[^"]*"[^>]*>(\d+)</span>', re.IGNORECASE)
-                nos = no_pattern.findall(html)
-                for i, (tytul, tworca) in enumerate(matches):
-                    try:
-                        no = int(nos[i]) if i < len(nos) else i + 1
-                    except:
-                        no = i + 1
-                    tracks.append((no, tytul.strip(), tworca.strip()))
-                # deduplicate keeping first occurrence per no
-                seen = {}
-                dedup = []
-                for no, t, tw in tracks:
-                    if no not in seen:
-                        seen[no] = True
-                        dedup.append((no, t, tw))
-                tracks = dedup
+            art_blocks = re.findall(r'<article[^>]+data-tytul="([^"]+)"[^>]*data-tworca="([^"]+)"[^>]*>(.*?)</article>', html, re.DOTALL | re.IGNORECASE)
+            if art_blocks:
+                tracks = []
+                for i, (tytul, tworca, inner) in enumerate(art_blocks):
+                    youtube_url = ""
+                    m = re.search(r'(https?://(?:www\.)?(?:youtu\.be/[^"\s<]+|youtube\.com/watch\?v=[^"\s<]+))', inner)
+                    if m:
+                        youtube_url = m.group(1)
+                    m_no = re.search(r'class="[^"]*track-no[^"]*"[^>]*>(\d+)<', inner)
+                    no = int(m_no.group(1)) if m_no else i + 1
+                    tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip()))
         except Exception as e:
             print(f"EXTRACT REGEX error: {e}")
 
-    # sort by no
     try:
         tracks.sort(key=lambda x: x[0])
     except:
@@ -189,7 +183,6 @@ def _extract_tracks_from_html(html: str):
 async def check_lista():
     now = datetime.now(WARSAW)
     try:
-        # 1. pobierz liste edycji TOP 20
         candidate_urls = []
         try:
             edycje_html = await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
@@ -198,14 +191,11 @@ async def check_lista():
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
 
-        # fallback - generuj od 30 w dol jesli /edycje nie dalo rady (JS rendered)
         if not candidate_urls:
             print("TOP20 WWW: /edycje nie zwrocilo linkow - generuje zakres 30..1")
             for n in range(30, 0, -1):
                 candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
         else:
-            # upewnij sie ze mamy tez fallback numery jesli najnowsza jest w moderacji i nie ma trackow
-            # dodaj na koniec zakres zeby zawsze bylo co sprawdzic
             existing_nums = set()
             for u in candidate_urls:
                 m = re.search(r"edycja-(\d+)", u)
@@ -214,7 +204,6 @@ async def check_lista():
             for n in range(30, 0, -1):
                 if n not in existing_nums:
                     candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
-            # posortuj po numerze malejaco - najwiekszy najpierw
             def get_num(u):
                 m = re.search(r"edycja-(\d+)", u)
                 return int(m.group(1)) if m else 0
@@ -223,11 +212,10 @@ async def check_lista():
         final_tracks = []
         used_url = None
 
-        for url in candidate_urls[:15]:  # sprawdz max 15 najnowszych zeby nie spamowac
+        for url in candidate_urls[:15]:
             try:
                 print(f"TOP20 WWW: probuje {url}")
                 html = await asyncio.to_thread(_fetch_sync, url)
-                # jesli strona mowi ze lista bedzie widoczna po glosowaniu - skip
                 if "Lista utworów będzie widoczna po rozpoczęciu głosowania" in html or "będzie widoczna po rozpoczęciu głosowania" in html:
                     print(f"TOP20 WWW: {url} - lista ukryta (moderacja), skip")
                     continue
@@ -245,18 +233,27 @@ async def check_lista():
             print(f"TOP20 WWW: nie znaleziono zadnej listy z utworami - pomijam zapis")
             return
 
-        # zbuduj final_list jak stary bot - "1. Tytul - Tworca"
         final_list = []
-        for no, tytul, tworca in final_tracks:
+        for no, tytul, tworca, yt in final_tracks:
             if tworca:
-                final_list.append(f"{no}. {tytul} - {tworca}")
+                base = f"{no}. {tytul} - {tworca}"
             else:
-                final_list.append(f"{no}. {tytul}")
+                base = f"{no}. {tytul}"
+            if yt:
+                base = f"{base} {yt}"
+            final_list.append(base.strip())
 
         print(f"TOP20 WWW: Znalazlem {len(final_list)} utworow z {used_url}")
 
-        # zapisz do Firebase tak jak stary bot
-        db.collection("lista").document("aktualna").set({
+        # --- LOGIKA WYNIKI: NOWA EDYCJA = STARE WYNIKI ZOSTAJA, DOPIERO REORDER TEJ SAMEJ EDYCJI PO LIVE ---
+        lista_ref = db.collection("lista").document("aktualna")
+        prev_snap = lista_ref.get()
+        prev_data = prev_snap.to_dict() if prev_snap.exists else None
+        prev_utwory = prev_data.get("utwory") if prev_data else None
+        prev_source_url = prev_data.get("source_url") if prev_data else None
+
+        # zawsze zapisz aktualna liste z WWW
+        lista_ref.set({
             "utwory": final_list,
             "count": len(final_list),
             "updated_at": firestore.SERVER_TIMESTAMP,
@@ -266,6 +263,67 @@ async def check_lista():
             "edycja": used_url.split("/")[-1] if used_url else "unknown"
         })
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url}")
+
+        # decyzja o Wyniki
+        should_update_wyniki = False
+        reason = ""
+
+        if prev_data is None:
+            should_update_wyniki = True
+            reason = "pierwsze uruchomienie - brak poprzedniej listy"
+        elif prev_source_url != used_url:
+            should_update_wyniki = False
+            reason = f"NOWA EDYCJA {used_url} vs stara {prev_source_url} - Wyniki zostaja stare do czasu LIVE reorder"
+            print(f"LIVE WINNERS: {reason}")
+        elif prev_utwory != final_list:
+            should_update_wyniki = True
+            reason = "ta sama edycja ale kolejnosc zmieniona - LIVE reorder - aktualizuje Wyniki TOP5"
+        else:
+            try:
+                w1 = db.collection("Wyniki").document("1").get()
+                if not w1.exists:
+                    should_update_wyniki = True
+                    reason = "Wyniki/1 nie istnieje - jednorazowe wstawienie edycja 20"
+                else:
+                    wd = w1.to_dict() or {}
+                    top1_tytul = final_tracks[0][1] if final_tracks else ""
+                    top1_tworca = final_tracks[0][2] if final_tracks else ""
+                    if wd.get("tytul") != top1_tytul or wd.get("tworca") != top1_tworca:
+                        should_update_wyniki = True
+                        reason = "Wyniki nie zgadzaja sie z lista/aktualna - naprawa jednorazowa edycja 20"
+            except Exception as e:
+                print(f"LIVE WINNERS check fix error: {e}")
+
+        if should_update_wyniki:
+            try:
+                top5 = final_tracks[:5]
+                for idx, (no, tytul, tworca, yt) in enumerate(top5):
+                    miejsce = idx + 1
+                    wynik_text = f"{tworca} - {tytul}" if tworca else tytul
+                    db.collection("Wyniki").document(str(miejsce)).set({
+                        "miejsce": miejsce,
+                        "wynik": wynik_text,
+                        "tytul": tytul,
+                        "tworca": tworca,
+                        "youtube": yt,
+                        "youtubeUrl": yt,
+                        "pelny": f"{miejsce}. {tytul} - {tworca} {yt}".strip(),
+                        "wynik_full": final_list[idx] if idx < len(final_list) else wynik_text,
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                        "updated_day": now.strftime("%d.%m.%Y %H:%M:%S"),
+                        "source": "live_top5_z_listy",
+                        "source_url": used_url,
+                        "edycja": used_url.split("/")[-1] if used_url else "unknown",
+                        "reason": reason
+                    }, merge=True)
+                    print(f"LIVE WINNERS: Wyniki/{miejsce} = {wynik_text} ({reason})")
+                print(f"LIVE WINNERS: ZAPISANO TOP5 do Wyniki - {reason}")
+            except Exception as e:
+                print(f"LIVE WINNERS ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"LIVE WINNERS: SKIP - {reason or 'kolejnosc bez zmian, nowa edycja czeka na LIVE'}")
 
     except Exception as e:
         print(f"ERROR lista WWW: {e}")
@@ -282,19 +340,8 @@ async def check_glosowanie_link():
         cid_raw = os.getenv("GLOSOWANIE_CHANNEL_ID") or os.getenv("LINKI_CHANNEL_ID") or "1517609248765382776"
         if not cid_raw:
             return
-        try:
-            cid = int(cid_raw)
-        except:
-            print(f"GLOSOWANIE: zly ID kanalu {cid_raw}")
-            return
-        try:
-            ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        except discord.errors.NotFound:
-            print(f"GLOSOWANIE: kanal {cid} nie istnieje (404) - sprawdz ID lub czy bot jest na serwerze")
-            return
-        except Exception as e:
-            print(f"GLOSOWANIE: blad pobierania kanalu {cid}: {e}")
-            return
+        cid = int(cid_raw)
+        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
         if ch is None:
             print(f"GLOSOWANIE: nie znaleziono kanału {cid}")
             return
@@ -355,78 +402,6 @@ async def check_glosowanie_link():
 
     except Exception as e:
         print(f"ERROR glosowanie_link: {e}")
-        import traceback
-        traceback.print_exc()
-
-# ============================================================
-# FRANC GADA
-# ============================================================
-
-@tasks.loop(seconds=15)
-async def check_franc_gada():
-    try:
-        coll = db.collection(FRANC_GADA_COLLECTION)
-        docs = coll.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
-        latest = None
-        for d in docs:
-            latest = d
-            break
-
-        if latest is None:
-            return
-
-        data = latest.to_dict() or {}
-        ts = data.get("timestamp") or 0
-        try:
-            ts = int(ts)
-        except:
-            ts = 0
-
-        if ts == 0:
-            return
-
-        sys_ref = db.collection(FRANC_GADA_COLLECTION).document(FRANC_GADA_SYSTEM_DOC)
-        sys_doc = sys_ref.get()
-        last_announced_ts = 0
-        if sys_doc.exists:
-            last_announced_ts = int((sys_doc.to_dict() or {}).get("last_announced_ts") or 0)
-
-        if ts <= last_announced_ts:
-            return
-
-        author = data.get("author") or "FRANC"
-        duration = data.get("durationSec") or 0
-
-        print(f"FRANC GADA: NOWA WIADOMOSC {latest.id} od {author} ts={ts} duration={duration}s")
-
-        try:
-            cid_raw = FRANC_GADA_ANNOUNCE_CHANNEL_ID
-            if cid_raw and cid_raw != "1517600000000000000":
-                cid = int(cid_raw)
-                ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-                if ch is not None:
-                    embed = discord.Embed(
-                        title="🎤 FRANC GADA! NOWA WIADOMOSC!",
-                        description=f"**{author}** nagral nowa wiadomosc glosowa w apce AI Arena FM!",
-                        color=0xFFD700
-                    )
-                    embed.add_field(name="Autor", value=author, inline=True)
-                    embed.add_field(name="Czas", value=f"{duration}s" if duration else "—", inline=True)
-                    embed.add_field(name="Co zrobic?", value="Otworz apke AI Arena FM -> kliknij pulsujace FRANC GADA zeby odtworzyc!", inline=False)
-                    embed.set_footer(text=f"ID: {latest.id} • {datetime.now(WARSAW).strftime('%d.%m.%Y %H:%M')}")
-                    await ch.send(content="@everyone 🎙 FRANC GADA! Sprawdz apke!", embed=embed)
-        except Exception as e:
-            print(f"FRANC GADA: blad wysylki Discord: {e}")
-
-        sys_ref.set({
-            "last_announced_ts": ts,
-            "last_announced_id": latest.id,
-            "last_announced_at": firestore.SERVER_TIMESTAMP,
-            "last_author": author
-        }, merge=True)
-
-    except Exception as e:
-        print(f"ERROR FRANC GADA: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
 
@@ -656,9 +631,19 @@ async def czlonkowie_count(ctx):
 @bot.command(name="lista_test")
 @commands.has_permissions(administrator=True)
 async def lista_test(ctx):
-    await ctx.send("🔄 Wymuszam check listy z WWW...")
+    await ctx.send("🔄 Wymuszam check listy z WWW + logika Wyniki...")
     await check_lista()
-    await ctx.send("✅ Sprawdź logi - lista powinna być zaktualizowana z aiarenatop10.pl")
+    await ctx.send("✅ Sprawdź logi")
+
+@bot.command(name="hof_test")
+@commands.has_permissions(administrator=True)
+async def hof_test(ctx):
+    await ctx.send("🔄 Wymuszam HOF z lista/aktualna...")
+    ok = await sync_hall_of_fame_from_lista()
+    if ok:
+        await ctx.send("✅ HOF wstawiony - sprawdz HALL OF FAME")
+    else:
+        await ctx.send("ℹ️ HOF już istnieje lub brak lista/aktualna - sprawdź logi")
 
 # ============================================================
 # ARCHIWUM UTWORÓW
@@ -719,207 +704,86 @@ async def sync_archiwum():
         print(f"ERROR archiwum: {type(e).__name__}: {e}")
 
 # ============================================================
-# HALL OF FAME
+# HALL OF FAME - NOWA LOGIKA Z LISTY (PONIEDZIALEK RANO) + BACKFILL
 # ============================================================
 
-HALL_OF_FAME_CHANNEL_ID = 1518213312234655825
 HALL_OF_FAME_COLLECTION = "HALL OF FAME"
 HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
 
-async def sync_hall_of_fame_all():
+async def sync_hall_of_fame_from_lista():
     try:
-        print("HALL OF FAME: PIERWSZE URUCHOMIENIE - ściągam WSZYSTKIE nr 1 + uzupełniam YouTube...")
-        cid = HALL_OF_FAME_CHANNEL_ID
-        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        if ch is None:
-            print(f"HOF: nie znaleziono kanału {cid}")
-            return 0
-        added = 0
-        skipped = 0
-        updated = 0
-        async for msg in ch.history(limit=None):
-            if not msg.content:
-                continue
-            found_line = None
-            for raw in msg.content.splitlines():
-                if re.match(r"^\s*1(?!\d)[\.\).]?\s+.+", raw):
-                    found_line = raw.strip()
-                    break
-            if not found_line:
-                continue
-            m_top = re.search(r"TOP\s*(\d+)\s*#\s*0*(\d+)", msg.content, re.IGNORECASE)
-            if m_top:
-                top_size = int(m_top.group(1))
-                numer = int(m_top.group(2))
-            else:
-                m_num = re.search(r"#\s*0*(\d+)", msg.content)
-                if not m_num:
-                    continue
-                top_size = 10
-                numer = int(m_num.group(1))
-            doc_id = f"{numer:03d}"
-            doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
-            doc_snap = doc_ref.get()
-            youtubeUrl = ""
-            youtubeId = ""
-            urls_all = re.findall(r"https?://[^\s\)\]\<\>\"']+", msg.content)
-            for u in urls_all:
-                uc = u.rstrip(").,!;")
-                if "youtu" in uc.lower():
-                    youtubeUrl = uc
-                    m_id = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", uc)
-                    if m_id:
-                        youtubeId = m_id.group(1)
-                    break
-            if not youtubeUrl:
-                urls_line = re.findall(r"https?://[^\s\)\]\<\>\"']+", found_line)
-                for u in urls_line:
-                    uc = u.rstrip(").,!;")
-                    if "youtu" in uc.lower():
-                        youtubeUrl = uc
-                        m_id = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", uc)
-                        if m_id:
-                            youtubeId = m_id.group(1)
-                        break
-            if doc_snap.exists:
-                existing = doc_snap.to_dict() or {}
-                if existing.get("youtubeId") and existing.get("youtubeUrl"):
-                    skipped += 1
-                    continue
-                else:
-                    if youtubeUrl or youtubeId:
-                        doc_ref.set({"youtubeId": youtubeId, "youtubeUrl": youtubeUrl, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-                        updated += 1
-                        print(f"HALL OF FAME: UZUPEŁNIONO YT dla {doc_id}: {youtubeId}")
-                    else:
-                        skipped += 1
-                    continue
-            clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", found_line)
-            clean = re.sub(r"https?://\S+", "", clean)
-            clean = re.sub(r"^\s*1(?!\d)[\.\).]?\s*", "", clean).strip()
-            wykonawca = ""
-            tytul = ""
-            if " - " in clean:
-                wykonawca, tytul = [x.strip() for x in clean.split(" - ", 1)]
-            elif " – " in clean:
-                wykonawca, tytul = [x.strip() for x in clean.split(" – ", 1)]
-            else:
-                parts = re.split(r"\s{2,}|\t+", clean)
-                if len(parts) >= 2:
-                    wykonawca = parts[0].strip()
-                    tytul = parts[1].strip()
-                else:
-                    tytul = clean
-            if not tytul:
-                continue
-            doc_ref.set({
-                "notowanie": f"TOP {top_size} #{doc_id}",
-                "numerNotowania": numer,
-                "sourceChannelId": str(cid),
-                "sourceMessageId": str(msg.id),
-                "tytul": tytul,
-                "wykonawca": wykonawca,
-                "youtubeId": youtubeId,
-                "youtubeUrl": youtubeUrl,
-                "updated_at": firestore.SERVER_TIMESTAMP
-            })
-            added += 1
-        print(f"HALL OF FAME: KONIEC. Dodano: {added}, uzupełniono YT: {updated}, pominięto: {skipped}")
-        return added
-    except Exception as e:
-        print(f"ERROR HOF ALL: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        return 0
-
-async def sync_hall_of_fame_latest():
-    try:
-        print("HALL OF FAME: szukam ostatniego miejsca nr 1...")
-        cid = HALL_OF_FAME_CHANNEL_ID
-        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        if ch is None:
-            print(f"HOF: nie znaleziono kanału {cid}")
+        lista_doc = db.collection("lista").document("aktualna").get()
+        if not lista_doc.exists:
+            print("HOF Z LISTY: brak lista/aktualna")
             return False
-        async for msg in ch.history(limit=150):
-            if not msg.content:
-                continue
-            found_line = None
-            for raw in msg.content.splitlines():
-                if re.match(r"^\s*1(?!\d)[\.\).]?\s+.+", raw):
-                    found_line = raw.strip()
-                    break
-            if not found_line:
-                continue
-            m_top = re.search(r"TOP\s*(\d+)\s*#\s*0*(\d+)", msg.content, re.IGNORECASE)
-            if m_top:
-                top_size = int(m_top.group(1))
-                numer = int(m_top.group(2))
+        lista_data = lista_doc.to_dict() or {}
+        source_url = lista_data.get("source_url") or ""
+        edycja_str = lista_data.get("edycja") or ""
+        m = re.search(r"edycja-(\d+)", edycja_str, re.IGNORECASE) or re.search(r"edycja-(\d+)", source_url, re.IGNORECASE)
+        if not m:
+            print(f"HOF Z LISTY: nie moge wyciagnac numeru edycji z {edycja_str} / {source_url}")
+            return False
+        numer = int(m.group(1))
+        doc_id = f"{numer:03d}"
+        doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
+        if doc_ref.get().exists:
+            print(f"HOF Z LISTY: {doc_id} juz istnieje - skip")
+            return False
+        try:
+            w1 = db.collection("Wyniki").document("1").get()
+            if w1.exists:
+                wd = w1.to_dict() or {}
+                tytul = wd.get("tytul") or ""
+                wykonawca = wd.get("tworca") or wd.get("wykonawca") or ""
+                youtubeUrl = wd.get("youtubeUrl") or wd.get("youtube") or ""
+                youtubeId = ""
+                if youtubeUrl:
+                    mm = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", youtubeUrl)
+                    if mm:
+                        youtubeId = mm.group(1)
             else:
-                m_num = re.search(r"#\s*0*(\d+)", msg.content)
-                if not m_num:
-                    continue
-                top_size = 10
-                numer = int(m_num.group(1))
-            doc_id = f"{numer:03d}"
-            doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
-            doc_snap = doc_ref.get()
-            youtubeUrl = ""
+                raise Exception("brak Wyniki/1")
+        except:
+            utwory = lista_data.get("utwory") or []
+            if not utwory:
+                print("HOF Z LISTY: brak utworow w lista/aktualna")
+                return False
+            first = utwory[0]
+            m_yt = re.search(r"(https?://(?:www\.)?(?:youtu\.be/[^\"\s<]+|youtube\.com/watch\?v=[^\"\s<]+))", first)
+            youtubeUrl = m_yt.group(1) if m_yt else ""
             youtubeId = ""
-            urls_all = re.findall(r"https?://[^\s\)\]\<\>\"']+", msg.content)
-            for u in urls_all:
-                uc = u.rstrip(").,!;")
-                if "youtu" in uc.lower():
-                    youtubeUrl = uc
-                    m_id = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", uc)
-                    if m_id:
-                        youtubeId = m_id.group(1)
-                    break
-            if doc_snap.exists:
-                existing = doc_snap.to_dict() or {}
-                if existing.get("youtubeId"):
-                    print(f"HALL OF FAME: {doc_id} już istnieje - nie ma nowego")
-                    return False
-                else:
-                    if youtubeUrl:
-                        doc_snap.reference.set({"youtubeId": youtubeId, "youtubeUrl": youtubeUrl, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-                        print(f"HALL OF FAME: UZUPEŁNIONO YT dla {doc_id}")
-                        return True
-                    return False
-            clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", found_line)
-            clean = re.sub(r"https?://\S+", "", clean)
-            clean = re.sub(r"^\s*1(?!\d)[\.\).]?\s*", "", clean).strip()
-            wykonawca = ""
-            tytul = ""
-            if " - " in clean:
-                wykonawca, tytul = [x.strip() for x in clean.split(" - ", 1)]
-            elif " – " in clean:
-                wykonawca, tytul = [x.strip() for x in clean.split(" – ", 1)]
+            if youtubeUrl:
+                mm = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", youtubeUrl)
+                if mm:
+                    youtubeId = mm.group(1)
+            first_clean = re.sub(r"https?://\S+", "", first).strip()
+            first_clean = re.sub(r"^\s*\d+[\.\)]?\s*", "", first_clean).strip()
+            if " - " in first_clean:
+                t, w = [x.strip() for x in first_clean.split(" - ", 1)]
+                tytul = t
+                wykonawca = w
             else:
-                parts = re.split(r"\s{2,}|\t+", clean)
-                if len(parts) >= 2:
-                    wykonawca = parts[0].strip()
-                    tytul = parts[1].strip()
-                else:
-                    tytul = clean
-            if not tytul:
-                continue
-            doc_ref.set({
-                "notowanie": f"TOP {top_size} #{doc_id}",
-                "numerNotowania": numer,
-                "sourceChannelId": str(cid),
-                "sourceMessageId": str(msg.id),
-                "tytul": tytul,
-                "wykonawca": wykonawca,
-                "youtubeId": youtubeId,
-                "youtubeUrl": youtubeUrl,
-                "updated_at": firestore.SERVER_TIMESTAMP
-            })
-            print(f"HALL OF FAME: ZAPISANO NOWE {doc_id} (TOP {top_size}): {wykonawca} - {tytul}")
-            return True
-        print("HALL OF FAME: nie znaleziono nowego miejsca nr 1")
-        return False
+                tytul = first_clean
+                wykonawca = ""
+        if not tytul:
+            print("HOF Z LISTY: brak tytulu - skip")
+            return False
+        doc_ref.set({
+            "notowanie": f"TOP 20 #{doc_id}",
+            "numerNotowania": numer,
+            "tytul": tytul,
+            "wykonawca": wykonawca,
+            "youtubeId": youtubeId,
+            "youtubeUrl": youtubeUrl,
+            "source": "lista/aktualna po LIVE",
+            "source_url": source_url,
+            "edycja": edycja_str,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
+        print(f"HOF Z LISTY: ZAPISANO {doc_id}: {wykonawca} - {tytul}")
+        return True
     except Exception as e:
-        print(f"ERROR HOF LATEST: {type(e).__name__}: {e}")
+        print(f"ERROR HOF Z LISTY: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -931,17 +795,18 @@ async def sync_hall_of_fame_initial():
         if sys_doc.exists:
             data = sys_doc.to_dict() or {}
             if data.get("initialized"):
-                print("HALL OF FAME: już zainicjalizowane - pomijam ściąganie wszystkich przy restarcie")
+                print("HALL OF FAME: juz zainicjalizowane - sprawdzam czy brakuje aktualnej edycji")
+                await sync_hall_of_fame_from_lista()
                 return
-        print("HALL OF FAME: pierwsze uruchomienie w historii - ściągam WSZYSTKIE")
-        await sync_hall_of_fame_all()
+        print("HALL OF FAME: pierwsze uruchomienie - inicjalizacja i proba wstawienia aktualnej edycji")
+        await sync_hall_of_fame_from_lista()
         sys_ref.set({
             "initialized": True,
             "initialized_at": firestore.SERVER_TIMESTAMP,
-            "description": "HALL OF FAME - tylko nr 1, TOP 10/15/20 - inicjalizacja raz"
+            "description": "HOF - nr 1 z listy po LIVE - poniedzialek rano + backfill"
         }, merge=True)
     except Exception as e:
-        print(f"ERROR HOF INIT: {type(e).__name__}: {e}")
+        print(f"ERROR HOF INIT: {e}")
         import traceback
         traceback.print_exc()
 
@@ -959,20 +824,20 @@ async def check_hall_of_fame():
             data = sys_doc.to_dict() or {}
         if data.get("last_week") == week_key:
             return
-        print(f"HALL OF FAME: poniedziałkowe sprawdzenie {week_key} (od 06:00)")
-        success = await sync_hall_of_fame_latest()
+        print(f"HALL OF FAME: poniedzialkowe sprawdzenie {week_key} (od 06:00) - proba wstawienia zwyciezcy z listy")
+        success = await sync_hall_of_fame_from_lista()
         if success:
             sys_ref.set({"last_week": week_key, "last_check": firestore.SERVER_TIMESTAMP}, merge=True)
-            print(f"HALL OF FAME: sprawdzenie zakończone sukcesem — tydzień {week_key} oznaczony jako wykonany")
+            print(f"HALL OF FAME: wstawiono - tydzien {week_key} oznaczony")
         else:
-            print("HALL OF FAME: nie znaleziono nowego #1 — ponowię sprawdzenie za 30 minut")
+            print("HALL OF FAME: brak nowego wpisu - ponowie za 30 min")
     except Exception as e:
-        print(f"ERROR HOF checker: {type(e).__name__}: {e}")
+        print(f"ERROR HOF checker: {e}")
         import traceback
         traceback.print_exc()
 
 # ============================================================
-# ODZYSKIWANIE PIN - FIX ANTY-SPAM FINALNY
+# ODZYSKIWANIE PIN
 # ============================================================
 
 def _parse_last_sent(last_sent):
@@ -1011,7 +876,7 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
                 if last_dt:
                     diff = (now - last_dt).total_seconds()
                     if diff < RECOVERY_DEBOUNCE_SECONDS:
-                        print(f"RECOVERY: ANTY-SPAM pomijam {discord_id} - DM wyslano {int(diff)}s temu (limit {RECOVERY_DEBOUNCE_SECONDS}s)")
+                        print(f"RECOVERY: ANTY-SPAM pomijam {discord_id} - DM wyslano {int(diff)}s temu")
                         recovery_ref.set({"status": "WAITING_CONFIRMATION"}, merge=True)
                         return True
         except Exception as e:
@@ -1289,7 +1154,7 @@ async def odzyskaj_test(ctx):
 
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - tryb WWW TOP20")
+    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 + HOF z listy - BEZ FRANC GADA")
     if not check_lista.is_running():
         check_lista.start()
     if not check_glosowanie_link.is_running():
@@ -1300,12 +1165,10 @@ async def on_ready():
         check_recovery_requests.start()
     if not check_hall_of_fame.is_running():
         check_hall_of_fame.start()
-    if not check_franc_gada.is_running():
-        check_franc_gada.start()
     if not sync_members_loop.is_running():
         sync_members_loop.start()
 
-    print("TEST: START sync_members() - pełny sync przy starcie")
+    print("TEST: START sync_members()")
     await sync_members()
     print("TEST: KONIEC sync_members()")
 
@@ -1317,9 +1180,7 @@ async def on_ready():
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
 
-    print("RECOVERY: system odzyskiwania PIN aktywny - FIX ANTY-SPAM 5 MIN")
-    print("CZŁONKOWIE: system na żywo + backup co 6h aktywny")
-    print("TOP20 WWW: scraper aiarenatop10.pl aktywny - edycja 20 -> 21 auto-nadpis")
+    print("READY: BEZ FRANC GADA, Wyniki tylko po zmianie kolejnosci, HOF poniedzialek z listy + backfill")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
 
