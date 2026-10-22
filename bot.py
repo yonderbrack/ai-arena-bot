@@ -156,7 +156,6 @@ def _extract_tracks_from_html(html: str):
             tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip()))
     except Exception as e:
         print(f"EXTRACT BS4 error: {e}")
-
     if len(tracks) < 3:
         try:
             art_blocks = re.findall(r'<article[^>]+data-tytul="([^"]+)"[^>]*data-tworca="([^"]+)"[^>]*>(.*?)</article>', html, re.DOTALL | re.IGNORECASE)
@@ -172,7 +171,6 @@ def _extract_tracks_from_html(html: str):
                     tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip()))
         except Exception as e:
             print(f"EXTRACT REGEX error: {e}")
-
     try:
         tracks.sort(key=lambda x: x[0])
     except:
@@ -190,7 +188,6 @@ async def check_lista():
             print(f"TOP20 WWW: znaleziono {len(candidate_urls)} linkow TOP20 w /edycje")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
-
         if not candidate_urls:
             print("TOP20 WWW: /edycje nie zwrocilo linkow - generuje zakres 30..1")
             for n in range(30, 0, -1):
@@ -211,7 +208,6 @@ async def check_lista():
 
         final_tracks = []
         used_url = None
-
         for url in candidate_urls[:15]:
             try:
                 print(f"TOP20 WWW: probuje {url}")
@@ -225,7 +221,16 @@ async def check_lista():
                     final_tracks = tracks
                     used_url = url
                     break
+            except requests.exceptions.HTTPError as he:
+                if "404" in str(he):
+                    print(f"TOP20 WWW: {url} - brak edycji (404), skip")
+                    continue
+                print(f"TOP20 WWW: blad {url}: {he}")
+                continue
             except Exception as e:
+                if "404" in str(e) or "Not Found" in str(e):
+                    print(f"TOP20 WWW: {url} - brak edycji (404), skip")
+                    continue
                 print(f"TOP20 WWW: blad {url}: {e}")
                 continue
 
@@ -245,14 +250,12 @@ async def check_lista():
 
         print(f"TOP20 WWW: Znalazlem {len(final_list)} utworow z {used_url}")
 
-        # --- LOGIKA WYNIKI: NOWA EDYCJA = STARE WYNIKI ZOSTAJA, DOPIERO REORDER TEJ SAMEJ EDYCJI PO LIVE ---
         lista_ref = db.collection("lista").document("aktualna")
         prev_snap = lista_ref.get()
         prev_data = prev_snap.to_dict() if prev_snap.exists else None
         prev_utwory = prev_data.get("utwory") if prev_data else None
         prev_source_url = prev_data.get("source_url") if prev_data else None
 
-        # zawsze zapisz aktualna liste z WWW
         lista_ref.set({
             "utwory": final_list,
             "count": len(final_list),
@@ -264,7 +267,6 @@ async def check_lista():
         })
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url}")
 
-        # decyzja o Wyniki
         should_update_wyniki = False
         reason = ""
 
@@ -330,31 +332,35 @@ async def check_lista():
         import traceback
         traceback.print_exc()
 
-# ============================================================
-# LINKI DO GŁOSOWANIA
-# ============================================================
-
 @tasks.loop(seconds=60)
 async def check_glosowanie_link():
     try:
         cid_raw = os.getenv("GLOSOWANIE_CHANNEL_ID") or os.getenv("LINKI_CHANNEL_ID") or "1517609248765382776"
         if not cid_raw:
             return
-        cid = int(cid_raw)
-        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        try:
+            cid = int(cid_raw)
+        except:
+            print(f"GLOSOWANIE: zly ID kanalu {cid_raw}")
+            return
+        try:
+            ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        except discord.errors.NotFound:
+            print(f"GLOSOWANIE: kanal {cid} nie istnieje (404) - sprawdz ID lub czy bot jest na serwerze")
+            return
+        except Exception as e:
+            print(f"GLOSOWANIE: blad pobierania kanalu {cid}: {e}")
+            return
         if ch is None:
             print(f"GLOSOWANIE: nie znaleziono kanału {cid}")
             return
-
         link_pattern = re.compile(
             r"https?://(?:forms\.gle|docs\.google\.com/(?:forms|spreadsheets)/|forms\.google\.com|forms\.office\.com|docs\.google\.com/forms)/[^\s\)\]\<\>\"']+",
             re.IGNORECASE
         )
-
         found_link = None
         found_msg_id = None
         found_msg_date = None
-
         async for msg in ch.history(limit=20):
             if not msg.content:
                 continue
@@ -365,20 +371,16 @@ async def check_glosowanie_link():
                 found_msg_id = str(msg.id)
                 found_msg_date = msg.created_at
                 break
-
         if not found_link:
             print("GLOSOWANIE: nie znaleziono linka w ostatnich 20 wiadomościach")
             return
-
         doc_ref = db.collection("config").document("glosowanie")
         current_doc = doc_ref.get()
         current_link = ""
         if current_doc.exists:
             current_link = current_doc.to_dict().get("glosuj_link", "") or ""
-
         if current_link == found_link:
             return
-
         doc_ref.set({
             "glosuj_link": found_link,
             "glosujLink": found_link,
@@ -389,7 +391,6 @@ async def check_glosowanie_link():
             "source_channel_name": "linki-do-glosowania",
             "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
-
         try:
             db.collection("config").document("glosuj").set({
                 "link": found_link,
@@ -397,17 +398,11 @@ async def check_glosowanie_link():
             }, merge=True)
         except Exception:
             pass
-
         print(f"GLOSOWANIE: ZAPISANO NOWY LINK {found_link} z msg {found_msg_id} ({found_msg_date})")
-
     except Exception as e:
         print(f"ERROR glosowanie_link: {e}")
         import traceback
         traceback.print_exc()
-
-# ============================================================
-# TYPY — CZYSZCZENIE
-# ============================================================
 
 TYPY_SYSTEM_DOC = "_system_weekly_cleanup"
 
@@ -494,10 +489,6 @@ async def check_typy_cleanup():
         print(f"ERROR typy cleanup checker: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-
-# ============================================================
-# CZŁONKOWIE
-# ============================================================
 
 async def sync_members():
     try:
@@ -645,10 +636,6 @@ async def hof_test(ctx):
     else:
         await ctx.send("ℹ️ HOF już istnieje lub brak lista/aktualna - sprawdź logi")
 
-# ============================================================
-# ARCHIWUM UTWORÓW
-# ============================================================
-
 async def sync_archiwum():
     try:
         print("ARCHIWUM: rozpoczynam pobieranie historii kanału...")
@@ -702,10 +689,6 @@ async def sync_archiwum():
         print(f"ARCHIWUM: ZAPISANO {len(display_entries)} utworów do archiwum/utwory")
     except Exception as e:
         print(f"ERROR archiwum: {type(e).__name__}: {e}")
-
-# ============================================================
-# HALL OF FAME - NOWA LOGIKA Z LISTY (PONIEDZIALEK RANO) + BACKFILL
-# ============================================================
 
 HALL_OF_FAME_COLLECTION = "HALL OF FAME"
 HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
@@ -836,10 +819,6 @@ async def check_hall_of_fame():
         import traceback
         traceback.print_exc()
 
-# ============================================================
-# ODZYSKIWANIE PIN
-# ============================================================
-
 def _parse_last_sent(last_sent):
     if last_sent is None:
         return None
@@ -866,7 +845,6 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
         now = datetime.now(timezone.utc)
         expires = now + timedelta(minutes=RECOVERY_TIMEOUT_MINUTES)
         recovery_ref = db.collection(RECOVERY_COLLECTION).document(discord_id_str)
-
         try:
             existing = recovery_ref.get()
             if existing.exists:
@@ -881,7 +859,6 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
                         return True
         except Exception as e:
             print(f"RECOVERY: blad anty-spam check: {e}")
-
         recovery_ref.set({
             "discordId": discord_id_str,
             "nick": nick,
@@ -892,7 +869,6 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
             "lastDmSentAt": firestore.SERVER_TIMESTAMP,
             "lastDmSentAtMs": int(now.timestamp() * 1000)
         }, merge=True)
-
         user = bot.get_user(discord_id)
         if user is None:
             try:
@@ -942,11 +918,9 @@ async def check_recovery_requests():
                     docs_sending.append(d)
         except Exception:
             pass
-
         docs = docs_pending + docs_sending
         if not docs:
             return
-
         print(f"RECOVERY: znaleziono {len(docs)} zadan PENDING/SENDING")
         for doc in docs:
             data = doc.to_dict() or {}
@@ -956,7 +930,6 @@ async def check_recovery_requests():
                 print(f"RECOVERY: błędne żądanie {doc.id}")
                 doc.reference.set({"status": "ERROR", "error": "Brak discordId lub nick"}, merge=True)
                 continue
-
             last_sent = data.get("lastDmSentAt") or data.get("lastDmSentAtMs") or data.get("sentAt")
             last_dt = _parse_last_sent(last_sent)
             if last_dt:
@@ -965,23 +938,18 @@ async def check_recovery_requests():
                     print(f"RECOVERY: SKIP PENDING {discord_id} - anty-spam {int(diff)}s")
                     doc.reference.set({"status": "WAITING_CONFIRMATION"}, merge=True)
                     continue
-
             doc.reference.set({
                 "status": "SENDING",
                 "processingAt": firestore.SERVER_TIMESTAMP,
                 "processingAtMs": int(datetime.now(timezone.utc).timestamp()*1000)
             }, merge=True)
-
             await asyncio.sleep(1)
-
             try:
                 discord_int = int(discord_id)
             except:
                 print(f"RECOVERY: bledny discordId {discord_id}")
                 continue
-
             await create_recovery_request(discord_int, nick, source="app")
-
     except Exception as e:
         print(f"ERROR recovery checker: {type(e).__name__}: {e}")
         import traceback
@@ -1148,13 +1116,9 @@ async def odzyskaj_test(ctx):
     else:
         await ctx.send("❌ Nie udało się wysłać wiadomości prywatnej.\nSprawdź, czy bot może wysyłać Ci DM.")
 
-# ============================================================
-# START
-# ============================================================
-
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 + HOF z listy - BEZ FRANC GADA")
+    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 + HOF z listy - BEZ FRANC GADA - FIX 404")
     if not check_lista.is_running():
         check_lista.start()
     if not check_glosowanie_link.is_running():
@@ -1180,7 +1144,7 @@ async def on_ready():
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
 
-    print("READY: BEZ FRANC GADA, Wyniki tylko po zmianie kolejnosci, HOF poniedzialek z listy + backfill")
+    print("READY: BEZ FRANC GADA, YT OK, Wyniki tylko po zmianie kolejnosci, HOF poniedzialek z listy + backfill + 404 fix")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
 
