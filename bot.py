@@ -135,15 +135,61 @@ def _extract_tracks_from_html(html: str):
                 m = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', inner)
                 if m:
                     youtube_url = m.group(0).rstrip('"\'')
-            fav_count = 0
-            fav_el = art.find("span", class_=lambda c: c and "fav-count" in c)
-            if fav_el:
-                try:
-                    txt = fav_el.get_text(strip=True)
+            # Liczba serduszek: sprawdzamy kilka możliwych nazw pól/klas,
+            # bo strona może zmieniać HTML. Najpierw szukamy elementów
+            # jednoznacznie związanych z polubieniami, a potem tekstu ♥ 12.
+            fav_count = None
+            heart_terms = ("fav", "heart", "serc", "like", "love")
+            count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
+
+            # 1. Atrybuty danych na karcie utworu i jej elementach.
+            for el in [art] + art.find_all(True):
+                if fav_count is not None:
+                    break
+                attrs = el.attrs or {}
+                classes = attrs.get("class", [])
+                if isinstance(classes, str):
+                    classes = classes.split()
+                ident = " ".join([str(attrs.get("id", "")), *[str(c) for c in classes]]).lower()
+                relevant = any(term in ident for term in heart_terms)
+                for attr in count_attrs:
+                    val = attrs.get(attr)
+                    if val is not None and (relevant or attr != "data-count"):
+                        mm = re.search(r"\d+", str(val))
+                        if mm:
+                            fav_count = int(mm.group())
+                            break
+                if fav_count is not None:
+                    break
+
+            # 2. Tekst wewnątrz elementów związanych z sercami/polubieniami.
+            if fav_count is None:
+                for el in art.find_all(True):
+                    attrs = el.attrs or {}
+                    classes = attrs.get("class", [])
+                    if isinstance(classes, str):
+                        classes = classes.split()
+                    ident = " ".join([str(attrs.get("id", "")), *[str(c) for c in classes]]).lower()
+                    if not any(term in ident for term in heart_terms):
+                        continue
+                    txt = el.get_text(" ", strip=True)
                     mm = re.search(r"\d+", txt)
-                    fav_count = int(mm.group()) if mm else 0
-                except:
-                    fav_count = 0
+                    if mm:
+                        fav_count = int(mm.group())
+                        break
+
+            # 3. Ostatecznie odczytaj zapis widoczny w karcie, np. „♥ 12” lub „❤ 12”.
+            if fav_count is None:
+                article_text = art.get_text(" ", strip=True)
+                mm = re.search(r"[♥❤♡]\s*(\d+)", article_text)
+                if mm:
+                    fav_count = int(mm.group(1))
+
+            # Nie znaleziono liczby w pobranym HTML. Zostawiamy 0, ale
+            # logujemy przypadek, żeby było wiadomo, że strona zmieniła sposób podawania danych.
+            if fav_count is None:
+                fav_count = 0
+                print(f"TOP20 WWW: UWAGA — nie znaleziono liczby serduszek dla: {tytul.strip()} (ID={track_id.strip()})")
             tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip(), fav_count, track_id.strip()))
     except Exception as e:
         print(f"EXTRACT BS4 error: {e}")
@@ -674,7 +720,7 @@ async def hof_test(ctx):
     if ok:
         await ctx.send("✅ HOF wstawiony - sprawdz HALL OF FAME")
     else:
-        await ctx.send("ℹ️ HOF już istnieje lub brak lista/aktualna - sprawdź logi")
+        await ctx.send("ℹ HOF już istnieje lub brak lista/aktualna - sprawdź logi")
 
 async def sync_archiwum():
     try:
