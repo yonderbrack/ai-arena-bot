@@ -635,6 +635,16 @@ async def lista_test(ctx):
     await check_lista()
     await ctx.send("✅ Sprawdź logi")
 
+@bot.command(name="hof_test")
+@commands.has_permissions(administrator=True)
+async def hof_test(ctx):
+    await ctx.send("🔄 Wymuszam HOF z lista/aktualna...")
+    ok = await sync_hall_of_fame_from_lista()
+    if ok:
+        await ctx.send("✅ HOF wstawiony - sprawdz HALL OF FAME")
+    else:
+        await ctx.send("ℹ️ HOF już istnieje lub brak lista/aktualna - sprawdź logi")
+
 # ============================================================
 # ARCHIWUM UTWORÓW
 # ============================================================
@@ -694,7 +704,7 @@ async def sync_archiwum():
         print(f"ERROR archiwum: {type(e).__name__}: {e}")
 
 # ============================================================
-# HALL OF FAME - NOWA LOGIKA Z LISTY (PONIEDZIALEK RANO)
+# HALL OF FAME - NOWA LOGIKA Z LISTY (PONIEDZIALEK RANO) + BACKFILL
 # ============================================================
 
 HALL_OF_FAME_COLLECTION = "HALL OF FAME"
@@ -749,7 +759,6 @@ async def sync_hall_of_fame_from_lista():
             first_clean = re.sub(r"https?://\S+", "", first).strip()
             first_clean = re.sub(r"^\s*\d+[\.\)]?\s*", "", first_clean).strip()
             if " - " in first_clean:
-                # w liscie format "Tytul - Tworca"
                 t, w = [x.strip() for x in first_clean.split(" - ", 1)]
                 tytul = t
                 wykonawca = w
@@ -786,16 +795,20 @@ async def sync_hall_of_fame_initial():
         if sys_doc.exists:
             data = sys_doc.to_dict() or {}
             if data.get("initialized"):
-                print("HALL OF FAME: juz zainicjalizowane - pomijam")
+                print("HALL OF FAME: juz zainicjalizowane - sprawdzam czy brakuje aktualnej edycji")
+                await sync_hall_of_fame_from_lista()
                 return
-        print("HALL OF FAME: pierwsze uruchomienie - system zainicjalizowany, HOF bedzie uzupelniany w poniedzialki z listy")
+        print("HALL OF FAME: pierwsze uruchomienie - inicjalizacja i proba wstawienia aktualnej edycji")
+        await sync_hall_of_fame_from_lista()
         sys_ref.set({
             "initialized": True,
             "initialized_at": firestore.SERVER_TIMESTAMP,
-            "description": "HOF - nr 1 z listy po LIVE - poniedzialek rano"
+            "description": "HOF - nr 1 z listy po LIVE - poniedzialek rano + backfill"
         }, merge=True)
     except Exception as e:
         print(f"ERROR HOF INIT: {e}")
+        import traceback
+        traceback.print_exc()
 
 @tasks.loop(minutes=30)
 async def check_hall_of_fame():
@@ -1167,7 +1180,7 @@ async def on_ready():
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
 
-    print("READY: BEZ FRANC GADA, Wyniki tylko po zmianie kolejnosci, HOF poniedzialek z listy")
+    print("READY: BEZ FRANC GADA, Wyniki tylko po zmianie kolejnosci, HOF poniedzialek z listy + backfill")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
 
