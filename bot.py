@@ -135,14 +135,10 @@ def _extract_tracks_from_html(html: str):
                 m = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', inner)
                 if m:
                     youtube_url = m.group(0).rstrip('"\'')
-            # Liczba serduszek: sprawdzamy kilka możliwych nazw pól/klas,
-            # bo strona może zmieniać HTML. Najpierw szukamy elementów
-            # jednoznacznie związanych z polubieniami, a potem tekstu ♥ 12.
             fav_count = None
             heart_terms = ("fav", "heart", "serc", "like", "love")
             count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
 
-            # 1. Atrybuty danych na karcie utworu i jej elementach.
             for el in [art] + art.find_all(True):
                 if fav_count is not None:
                     break
@@ -162,7 +158,6 @@ def _extract_tracks_from_html(html: str):
                 if fav_count is not None:
                     break
 
-            # 2. Tekst wewnątrz elementów związanych z sercami/polubieniami.
             if fav_count is None:
                 for el in art.find_all(True):
                     attrs = el.attrs or {}
@@ -178,9 +173,6 @@ def _extract_tracks_from_html(html: str):
                         fav_count = int(mm.group())
                         break
 
-            # 3. Najpierw odczytaj dokładnie element wskazany w HTML strony:
-            # <span class="fav-count">15</span>
-            # Robimy to jawnie, zanim uznamy, że licznik ma wartość 0.
             if fav_count is None:
                 fav_el = art.select_one("span.fav-count, .fav-count")
                 if fav_el is not None:
@@ -189,15 +181,12 @@ def _extract_tracks_from_html(html: str):
                     if mm:
                         fav_count = int(mm.group())
 
-            # 4. Ostatecznie odczytaj zapis widoczny w karcie, np. „♥ 12” lub „❤ 12”.
             if fav_count is None:
                 article_text = art.get_text(" ", strip=True)
                 mm = re.search(r"[♥❤♡]\s*(\d+)", article_text)
                 if mm:
                     fav_count = int(mm.group(1))
 
-            # 5. Awaryjny odczyt z surowego HTML samej karty. Przydaje się,
-            # gdy parser HTML nie złoży elementu fav-count w oczekiwany sposób.
             if fav_count is None:
                 raw_article = str(art)
                 mm = re.search(
@@ -208,8 +197,6 @@ def _extract_tracks_from_html(html: str):
                 if mm:
                     fav_count = int(mm.group(1))
 
-            # Nie znaleziono liczby w pobranym HTML. Zostawiamy 0, ale
-            # logujemy przypadek, żeby było wiadomo, że strona zmieniła sposób podawania danych.
             if fav_count is None:
                 fav_count = 0
                 print(f"TOP20 WWW: UWAGA — nie znaleziono liczby serduszek dla: {tytul.strip()} (ID={track_id.strip()})")
@@ -344,8 +331,6 @@ async def check_lista():
         lista_ref = db.collection("lista").document("aktualna")
         prev_snap = lista_ref.get()
         prev_data = prev_snap.to_dict() if prev_snap.exists else None
-        prev_utwory = prev_data.get("utwory") if prev_data else None
-        prev_source_url = prev_data.get("source_url") if prev_data else None
 
         lista_ref.set({
             "utwory": final_list,
@@ -367,74 +352,78 @@ async def check_lista():
 
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url} + serca")
 
-        should_update_wyniki = False
-        reason = ""
-        if prev_data is None:
-            should_update_wyniki = True
-            reason = "pierwsze uruchomienie - brak poprzedniej listy"
-        elif prev_source_url != used_url:
-            should_update_wyniki = False
-            reason = f"NOWA EDYCJA {used_url} vs stara {prev_source_url} - Wyniki zostaja stare do czasu LIVE reorder"
-            print(f"LIVE WINNERS: {reason}")
-        elif prev_utwory != final_list:
-            should_update_wyniki = True
-            reason = "ta sama edycja ale kolejnosc zmieniona - LIVE reorder - aktualizuje Wyniki TOP5"
+        # === NOWA LOGIKA LIVE: tylko niedziela po 20:00, pojedynczo ===
+        is_live_window = (now.weekday() == 6 and now.hour >= 20)
+
+        if not is_live_window:
+            print(f"LIVE WINNERS: SKIP - nie niedziela po 20:00 (teraz {now.strftime('%A %H:%M:%S')} Europe/Warsaw) - Wyniki czekaja na LIVE")
         else:
             try:
-                w1 = db.collection("Wyniki").document("1").get()
-                if not w1.exists:
-                    should_update_wyniki = True
-                    reason = "Wyniki/1 nie istnieje - jednorazowe wstawienie edycja 20"
-                else:
-                    wd = w1.to_dict() or {}
-                    top1_tytul = final_tracks[0][1] if final_tracks else ""
-                    top1_tworca = final_tracks[0][2] if final_tracks else ""
-                    if wd.get("tytul") != top1_tytul or wd.get("tworca") != top1_tworca:
-                        should_update_wyniki = True
-                        reason = "Wyniki nie zgadzaja sie z lista/aktualna - naprawa jednorazowa edycja 20"
-            except Exception as e:
-                print(f"LIVE WINNERS check fix error: {e}")
-
-        if should_update_wyniki:
-            try:
                 top5 = final_tracks[:5]
-                for idx, item in enumerate(top5):
-                    if len(item) == 6:
-                        no, tytul, tworca, yt, fav, tid = item
-                    else:
-                        no, tytul, tworca, yt = item
-                        fav = 0
-                        tid = ""
-                    miejsce = idx + 1
-                    wynik_text = f"{tworca} - {tytul}" if tworca else tytul
-                    db.collection("Wyniki").document(str(miejsce)).set({
-                        "miejsce": miejsce,
-                        "wynik": wynik_text,
-                        "tytul": tytul,
-                        "tworca": tworca,
-                        "youtube": yt,
-                        "youtubeUrl": yt,
-                        "pelny": f"{miejsce}. {tytul} - {tworca} {yt}".strip(),
-                        "wynik_full": final_list[idx] if idx < len(final_list) else wynik_text,
-                        "serca": int(fav),
-                        "fav_count": int(fav),
-                        "hearts": int(fav),
-                        "track_id": tid,
-                        "updated_at": firestore.SERVER_TIMESTAMP,
-                        "updated_day": now.strftime("%d.%m.%Y %H:%M:%S"),
-                        "source": "live_top5_z_listy",
-                        "source_url": used_url,
-                        "edycja": used_url.split("/")[-1] if used_url else "unknown",
-                        "reason": reason
-                    }, merge=True)
-                    print(f"LIVE WINNERS: Wyniki/{miejsce} = {wynik_text} [{fav} serca] ({reason})")
-                print(f"LIVE WINNERS: ZAPISANO TOP5 do Wyniki - {reason}")
+                if not top5:
+                    print("LIVE WINNERS: LIVE window ale brak top5 - skip")
+                else:
+                    print(f"LIVE WINNERS: LIVE window aktywny - sprawdzam TOP5 pojedynczo z {used_url}")
+                    for idx, item in enumerate(top5):
+                        if len(item) == 6:
+                            no, tytul, tworca, yt, fav, tid = item
+                        else:
+                            no, tytul, tworca, yt = item
+                            fav = 0
+                            tid = ""
+                        miejsce = idx + 1
+                        doc_ref = db.collection("Wyniki").document(str(miejsce))
+                        existing_snap = doc_ref.get()
+                        existing_data = existing_snap.to_dict() if existing_snap.exists else None
+
+                        needs_update = False
+                        reason = ""
+                        if not existing_data:
+                            needs_update = True
+                            reason = f"LIVE {miejsce} - pierwsze wstawienie w niedziele po 20:00"
+                        else:
+                            # jesli tytul/tworca/track_id inny niz w Firebase -> to jest wskoczenie nowego numeru
+                            if existing_data.get("tytul") != tytul or existing_data.get("tworca") != tworca or existing_data.get("track_id") != tid:
+                                needs_update = True
+                                reason = f"LIVE {miejsce} - wskoczyl nowy: {tworca} - {tytul} (bylo {existing_data.get('tworca')} - {existing_data.get('tytul')})"
+                            else:
+                                # ten sam utwor ale zmienily sie serca - aktualizuj tylko serca
+                                if int(existing_data.get("serca") or 0) != int(fav):
+                                    needs_update = True
+                                    reason = f"LIVE {miejsce} - aktualizacja serc {existing_data.get('serca')} -> {fav}"
+
+                        if needs_update:
+                            wynik_text = f"{tworca} - {tytul}" if tworca else tytul
+                            doc_ref.set({
+                                "miejsce": miejsce,
+                                "wynik": wynik_text,
+                                "tytul": tytul,
+                                "tworca": tworca,
+                                "youtube": yt,
+                                "youtubeUrl": yt,
+                                "pelny": f"{miejsce}. {tytul} - {tworca} {yt}".strip(),
+                                "wynik_full": final_list[idx] if idx < len(final_list) else wynik_text,
+                                "serca": int(fav),
+                                "fav_count": int(fav),
+                                "hearts": int(fav),
+                                "track_id": tid,
+                                "updated_at": firestore.SERVER_TIMESTAMP,
+                                "updated_day": now.strftime("%d.%m.%Y %H:%M:%S"),
+                                "source": "live_top5_z_listy_niedziela_20",
+                                "source_url": used_url,
+                                "edycja": used_url.split("/")[-1] if used_url else "unknown",
+                                "reason": reason
+                            }, merge=True)
+                            print(f"LIVE WINNERS: Wyniki/{miejsce} = {wynik_text} [{fav} serca] ({reason})")
+                        else:
+                            print(f"LIVE WINNERS: Wyniki/{miejsce} bez zmian - skip")
+
+                    print("LIVE WINNERS: koniec sprawdzania TOP5 w LIVE window")
+
             except Exception as e:
                 print(f"LIVE WINNERS ERROR: {e}")
                 import traceback
                 traceback.print_exc()
-        else:
-            print(f"LIVE WINNERS: SKIP - {reason or 'kolejnosc bez zmian, nowa edycja czeka na LIVE'}")
 
     except Exception as e:
         print(f"ERROR lista WWW: {e}")
@@ -1256,3 +1245,4 @@ async def on_ready():
     print("READY: BEZ FRANC GADA, YT OK, SERCA LIVE, 404 fix, HOF backfill")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
