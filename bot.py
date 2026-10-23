@@ -1,3 +1,4 @@
+
 import os
 import json
 import base64
@@ -727,12 +728,12 @@ async def lista_test(ctx):
 @bot.command(name="hof_test")
 @commands.has_permissions(administrator=True)
 async def hof_test(ctx):
-    await ctx.send("🔄 Wymuszam HOF z lista/aktualna...")
+    await ctx.send("🔄 Wymuszam HOF z Wyniki/1 (niedziela 23:00)...")
     ok = await sync_hall_of_fame_from_lista()
     if ok:
         await ctx.send("✅ HOF wstawiony - sprawdz HALL OF FAME")
     else:
-        await ctx.send("ℹ HOF już istnieje lub brak lista/aktualna - sprawdź logi")
+        await ctx.send("ℹ HOF już istnieje lub brak Wyniki/1 - sprawdź logi")
 
 async def sync_archiwum():
     try:
@@ -791,64 +792,56 @@ async def sync_archiwum():
 HALL_OF_FAME_COLLECTION = "HALL OF FAME"
 HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
 
+# === FIX HOF: NIEDZIELA 23:00 Z WYNIKI/1 ===
+
 async def sync_hall_of_fame_from_lista():
     try:
-        lista_doc = db.collection("lista").document("aktualna").get()
-        if not lista_doc.exists:
-            print("HOF Z LISTY: brak lista/aktualna")
+        # Teraz bierzemy z Wyniki/1 - tylko po wejsciu w niedzielę
+        w1_ref = db.collection("Wyniki").document("1")
+        w1_snap = w1_ref.get()
+        if not w1_snap.exists:
+            print("HOF Z WYNIKI/1: brak Wyniki/1 - skip")
             return False
-        lista_data = lista_doc.to_dict() or {}
-        source_url = lista_data.get("source_url") or ""
-        edycja_str = lista_data.get("edycja") or ""
+        wd = w1_snap.to_dict() or {}
+        tytul = wd.get("tytul") or ""
+        wykonawca = wd.get("tworca") or wd.get("wykonawca") or ""
+        youtubeUrl = wd.get("youtubeUrl") or wd.get("youtube") or ""
+        edycja_str = wd.get("edycja") or ""
+        source_url = wd.get("source_url") or ""
+
+        # Numer edycji z Wyniki/1
         m = re.search(r"edycja-(\d+)", edycja_str, re.IGNORECASE) or re.search(r"edycja-(\d+)", source_url, re.IGNORECASE)
         if not m:
-            print(f"HOF Z LISTY: nie moge wyciagnac numeru edycji z {edycja_str} / {source_url}")
+            # fallback - wez z lista/aktualna
+            lista_snap = db.collection("lista").document("aktualna").get()
+            if lista_snap.exists:
+                ld = lista_snap.to_dict() or {}
+                fallback_ed = ld.get("edycja") or ld.get("source_url") or ""
+                m = re.search(r"edycja-(\d+)", fallback_ed, re.IGNORECASE)
+                if m and not edycja_str:
+                    edycja_str = fallback_ed
+
+        if not m:
+            print(f"HOF Z WYNIKI/1: nie moge wyciagnac numeru edycji z {edycja_str} / {source_url}")
             return False
+
         numer = int(m.group(1))
         doc_id = f"{numer:03d}"
         doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
         if doc_ref.get().exists:
-            print(f"HOF Z LISTY: {doc_id} juz istnieje - skip")
+            print(f"HOF Z WYNIKI/1: {doc_id} juz istnieje - skip")
             return False
-        try:
-            w1 = db.collection("Wyniki").document("1").get()
-            if w1.exists:
-                wd = w1.to_dict() or {}
-                tytul = wd.get("tytul") or ""
-                wykonawca = wd.get("tworca") or wd.get("wykonawca") or ""
-                youtubeUrl = wd.get("youtubeUrl") or wd.get("youtube") or ""
-                youtubeId = ""
-                if youtubeUrl:
-                    mm = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", youtubeUrl)
-                    if mm:
-                        youtubeId = mm.group(1)
-            else:
-                raise Exception("brak Wyniki/1")
-        except:
-            utwory = lista_data.get("utwory") or []
-            if not utwory:
-                print("HOF Z LISTY: brak utworow w lista/aktualna")
-                return False
-            first = utwory[0]
-            m_yt = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', first)
-            youtubeUrl = m_yt.group(0) if m_yt else ""
-            youtubeId = ""
-            if youtubeUrl:
-                mm = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", youtubeUrl)
-                if mm:
-                    youtubeId = mm.group(1)
-            first_clean = re.sub(r"https?://\S+", "", first).strip()
-            first_clean = re.sub(r"^\s*\d+[\.\)]?\s*", "", first_clean).strip()
-            if " - " in first_clean:
-                t, w = [x.strip() for x in first_clean.split(" - ", 1)]
-                tytul = t
-                wykonawca = w
-            else:
-                tytul = first_clean
-                wykonawca = ""
+
         if not tytul:
-            print("HOF Z LISTY: brak tytulu - skip")
+            print("HOF Z WYNIKI/1: brak tytulu w Wyniki/1 - skip")
             return False
+
+        youtubeId = ""
+        if youtubeUrl:
+            mm = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", youtubeUrl)
+            if mm:
+                youtubeId = mm.group(1)
+
         doc_ref.set({
             "notowanie": f"TOP 20 #{doc_id}",
             "numerNotowania": numer,
@@ -856,15 +849,15 @@ async def sync_hall_of_fame_from_lista():
             "wykonawca": wykonawca,
             "youtubeId": youtubeId,
             "youtubeUrl": youtubeUrl,
-            "source": "lista/aktualna po LIVE",
+            "source": "Wyniki/1 niedziela 23:00",
             "source_url": source_url,
             "edycja": edycja_str,
             "updated_at": firestore.SERVER_TIMESTAMP
         })
-        print(f"HOF Z LISTY: ZAPISANO {doc_id}: {wykonawca} - {tytul}")
+        print(f"HOF Z WYNIKI/1: ZAPISANO {doc_id}: {wykonawca} - {tytul}")
         return True
     except Exception as e:
-        print(f"ERROR HOF Z LISTY: {e}")
+        print(f"ERROR HOF Z WYNIKI/1: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -876,42 +869,41 @@ async def sync_hall_of_fame_initial():
         if sys_doc.exists:
             data = sys_doc.to_dict() or {}
             if data.get("initialized"):
-                print("HALL OF FAME: juz zainicjalizowane - sprawdzam czy brakuje aktualnej edycji")
-                await sync_hall_of_fame_from_lista()
+                print("HALL OF FAME: juz zainicjalizowane - bez wstawiania")
                 return
-        print("HALL OF FAME: pierwsze uruchomienie - inicjalizacja i proba wstawienia aktualnej edycji")
-        await sync_hall_of_fame_from_lista()
+        print("HALL OF FAME: pierwsze uruchomienie - tylko inicjalizacja, bez wstawiania HOF")
         sys_ref.set({
             "initialized": True,
             "initialized_at": firestore.SERVER_TIMESTAMP,
-            "description": "HOF - nr 1 z listy po LIVE - poniedzialek rano + backfill"
+            "description": "HOF - z Wyniki/1 niedziela 23:00"
         }, merge=True)
     except Exception as e:
         print(f"ERROR HOF INIT: {e}")
         import traceback
         traceback.print_exc()
 
-@tasks.loop(minutes=30)
+@tasks.loop(minutes=5)
 async def check_hall_of_fame():
     try:
         now = datetime.now(WARSAW)
-        if now.weekday() != 0 or now.hour < 6:
+        # TYLKO niedziela 23:00-23:59
+        if now.weekday() != 6 or now.hour != 23:
             return
-        week_key = now.strftime("%Y-%W")
+        day_key = now.strftime("%Y-%m-%d")
         sys_ref = db.collection(HALL_OF_FAME_COLLECTION).document(HALL_OF_FAME_SYSTEM_DOC)
         sys_doc = sys_ref.get()
         data = {}
         if sys_doc.exists:
             data = sys_doc.to_dict() or {}
-        if data.get("last_week") == week_key:
+        if data.get("last_hof_day") == day_key:
             return
-        print(f"HALL OF FAME: poniedzialkowe sprawdzenie {week_key} (od 06:00) - proba wstawienia zwyciezcy z listy")
+        print(f"HALL OF FAME: niedziela 23:00 {day_key} - proba wstawienia z Wyniki/1")
         success = await sync_hall_of_fame_from_lista()
         if success:
-            sys_ref.set({"last_week": week_key, "last_check": firestore.SERVER_TIMESTAMP}, merge=True)
-            print(f"HALL OF FAME: wstawiono - tydzien {week_key} oznaczony")
+            sys_ref.set({"last_hof_day": day_key, "last_check": firestore.SERVER_TIMESTAMP}, merge=True)
+            print(f"HALL OF FAME: wstawiono - dzien {day_key} oznaczony")
         else:
-            print("HALL OF FAME: brak nowego wpisu - ponowie za 30 min")
+            print("HALL OF FAME: brak nowego wpisu - ponowie za 5 min")
     except Exception as e:
         print(f"ERROR HOF checker: {e}")
         import traceback
@@ -1216,7 +1208,7 @@ async def odzyskaj_test(ctx):
 
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 + HOF + SERCA - BEZ FRANC GADA - FIX 404")
+    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 + HOF NIEDZIELA 23:00 Z WYNIKI/1")
     if not check_lista.is_running():
         check_lista.start()
     if not check_glosowanie_link.is_running():
@@ -1242,7 +1234,7 @@ async def on_ready():
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
 
-    print("READY: BEZ FRANC GADA, YT OK, SERCA LIVE, 404 fix, HOF backfill")
+    print("READY: HOF tylko niedziela 23:00 z Wyniki/1")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
 
