@@ -7,8 +7,8 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import 【entity-discord¦canonical_name=discord】
-from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
+import discord
+from discord.ext import commands, tasks
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -28,7 +28,7 @@ else:
 
 db = firestore.client()
 
-intents = 【entity-discord¦canonical_name=discord】.Intents.default()
+intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
@@ -45,7 +45,7 @@ TOP20_DEFAULT_URL = os.getenv("TOP20_LISTA_URL", f"{TOP20_BASE_URL}/lista/ai-are
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
-# === DODANE - AUTO ZAPIS USERA ===
+# === DODANE - TYLKO TO, RESZTA ORYGINAŁ ===
 def ensure_users_doc(discord_id: str, nick: str):
     try:
         did = str(discord_id)
@@ -373,6 +373,7 @@ async def check_lista():
 
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url} + serca")
 
+        # === NOWA LOGIKA LIVE: tylko niedziela po 20:00, pojedynczo ===
         is_live_window = (now.weekday() == 6 and now.hour >= 20)
 
         if not is_live_window:
@@ -402,10 +403,12 @@ async def check_lista():
                             needs_update = True
                             reason = f"LIVE {miejsce} - pierwsze wstawienie w niedziele po 20:00"
                         else:
+                            # jesli tytul/tworca/track_id inny niz w Firebase -> to jest wskoczenie nowego numeru
                             if existing_data.get("tytul") != tytul or existing_data.get("tworca") != tworca or existing_data.get("track_id") != tid:
                                 needs_update = True
                                 reason = f"LIVE {miejsce} - wskoczyl nowy: {tworca} - {tytul} (bylo {existing_data.get('tworca')} - {existing_data.get('tytul')})"
                             else:
+                                # ten sam utwor ale zmienily sie serca - aktualizuj tylko serca
                                 if int(existing_data.get("serca") or 0) != int(fav):
                                     needs_update = True
                                     reason = f"LIVE {miejsce} - aktualizacja serc {existing_data.get('serca')} -> {fav}"
@@ -643,7 +646,6 @@ async def sync_members():
                 },
                 merge=True
             )
-            # DODANE - zapis do users
             ensure_users_doc(str(member.id), member.display_name)
             batch_count += 1
             if batch_count >= 400:
@@ -655,7 +657,7 @@ async def sync_members():
         if batch_count > 0:
             batch.commit()
             saved_count += batch_count
-        print(f"CZŁONKOWIE: zapisano/zaktualizowano {saved_count} rekordów w Firebase → czlonkowie + users")
+        print(f"CZŁONKOWIE: zapisano/zaktualizowano {saved_count} rekordów w Firebase → czlonkowie")
     except Exception as e:
         print(f"ERROR członkowie: {type(e).__name__}: {e}")
         import traceback
@@ -686,7 +688,6 @@ async def on_member_join(member):
             "joined_at_iso": datetime.now(timezone.utc).isoformat(),
             "active": True,
         }, merge=True)
-        # DODANE - zapis do users przy wejsciu
         ensure_users_doc(str(member.id), member.display_name)
     except Exception as e:
         print(f"ERROR on_member_join: {e}")
@@ -727,7 +728,7 @@ async def on_member_remove(member):
 async def sync_cmd(ctx):
     await ctx.send("🔄 Rozpoczynam pełną synchronizację członków...")
     await sync_members()
-    await ctx.send("✅ Synchronizacja zakończona! Sprawdz `users` i `czlonkowie`")
+    await ctx.send("✅ Synchronizacja zakończona!")
 
 @bot.command(name="czlonkowie")
 @commands.has_permissions(administrator=True)
@@ -738,15 +739,6 @@ async def czlonkowie_count(ctx):
         await ctx.send(f"📊 W bazie jest {len(docs)} dokumentów w `czlonkowie`")
     except Exception as e:
         await ctx.send(f"❌ Błąd: {e}")
-
-@bot.command(name="dodaj_usera")
-@commands.has_permissions(administrator=True)
-async def dodaj_usera(ctx, member: discord.Member):
-    ok = ensure_users_doc(str(member.id), member.display_name)
-    if ok:
-        await ctx.send(f"✅ Utworzono `users/{member.id}` dla {member.mention}")
-    else:
-        await ctx.send(f"ℹ Już istnieje `users/{member.id}`")
 
 @bot.command(name="lista_test")
 @commands.has_permissions(administrator=True)
@@ -822,8 +814,11 @@ async def sync_archiwum():
 HALL_OF_FAME_COLLECTION = "HALL OF FAME"
 HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
 
+# === FIX HOF: NIEDZIELA 23:00 Z WYNIKI/1 ===
+
 async def sync_hall_of_fame_from_lista():
     try:
+        # Teraz bierzemy z Wyniki/1 - tylko po wejsciu w niedzielę
         w1_ref = db.collection("Wyniki").document("1")
         w1_snap = w1_ref.get()
         if not w1_snap.exists:
@@ -836,8 +831,10 @@ async def sync_hall_of_fame_from_lista():
         edycja_str = wd.get("edycja") or ""
         source_url = wd.get("source_url") or ""
 
+        # Numer edycji z Wyniki/1
         m = re.search(r"edycja-(\d+)", edycja_str, re.IGNORECASE) or re.search(r"edycja-(\d+)", source_url, re.IGNORECASE)
         if not m:
+            # fallback - wez z lista/aktualna
             lista_snap = db.collection("lista").document("aktualna").get()
             if lista_snap.exists:
                 ld = lista_snap.to_dict() or {}
@@ -911,6 +908,7 @@ async def sync_hall_of_fame_initial():
 async def check_hall_of_fame():
     try:
         now = datetime.now(WARSAW)
+        # TYLKO niedziela 23:00-23:59
         if now.weekday() != 6 or now.hour != 23:
             return
         day_key = now.strftime("%Y-%m-%d")
@@ -1261,3 +1259,4 @@ async def on_ready():
     print("READY: HOF tylko niedziela 23:00 z Wyniki/1")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
