@@ -321,8 +321,9 @@ async def check_lista():
                 tid = ""
             else:
                 continue
+            # FIX FORMAT: ujednolicono na TWORCA - TYTUL zeby apka nie miala 0pkt
             if tworca:
-                base = f"{no}. {tytul} - {tworca}"
+                base = f"{no}. {tworca} - {tytul}"
             else:
                 base = f"{no}. {tytul}"
             if yt:
@@ -373,7 +374,7 @@ async def check_lista():
 
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url} + serca")
 
-        # === NOWA LOGIKA LIVE: tylko niedziela po 20:00, pojedynczo ===
+        # === NOWA LOGIKA LIVE: tylko niedziela po 20:00, pojedynczo + weryfikacja z listy ===
         is_live_window = (now.weekday() == 6 and now.hour >= 20)
 
         if not is_live_window:
@@ -384,7 +385,9 @@ async def check_lista():
                 if not top5:
                     print("LIVE WINNERS: LIVE window ale brak top5 - skip")
                 else:
-                    print(f"LIVE WINNERS: LIVE window aktywny - sprawdzam TOP5 pojedynczo z {used_url}")
+                    print(f"LIVE WINNERS: LIVE window aktywny - sprawdzam TOP5 pojedynczo z {used_url} - weryfikacja czy piosenka z listy")
+                    # mapa track_id z lista/aktualna zeby tylko piosenki z listy wchodzily do Wyniki
+                    lista_track_ids = set([d["track_id"] for d in detailed_tracks if d["track_id"]])
                     for idx, item in enumerate(top5):
                         if len(item) == 6:
                             no, tytul, tworca, yt, fav, tid = item
@@ -392,6 +395,10 @@ async def check_lista():
                             no, tytul, tworca, yt = item
                             fav = 0
                             tid = ""
+                        # FIX: tylko piosenka która jest w lista/aktualna może wejść do Wyniki
+                        if lista_track_ids and tid and tid not in lista_track_ids:
+                            print(f"LIVE WINNERS: SKIP {idx+1} - track_id {tid} nie ma w lista/aktualna - nie wstawiam")
+                            continue
                         miejsce = idx + 1
                         doc_ref = db.collection("Wyniki").document(str(miejsce))
                         existing_snap = doc_ref.get()
@@ -401,14 +408,12 @@ async def check_lista():
                         reason = ""
                         if not existing_data:
                             needs_update = True
-                            reason = f"LIVE {miejsce} - pierwsze wstawienie w niedziele po 20:00"
+                            reason = f"LIVE {miejsce} - pierwsze wstawienie w niedziele po 20:00 - z listy"
                         else:
-                            # jesli tytul/tworca/track_id inny niz w Firebase -> to jest wskoczenie nowego numeru
                             if existing_data.get("tytul") != tytul or existing_data.get("tworca") != tworca or existing_data.get("track_id") != tid:
                                 needs_update = True
-                                reason = f"LIVE {miejsce} - wskoczyl nowy: {tworca} - {tytul} (bylo {existing_data.get('tworca')} - {existing_data.get('tytul')})"
+                                reason = f"LIVE {miejsce} - wskoczyl nowy z listy: {tworca} - {tytul} (bylo {existing_data.get('tworca')} - {existing_data.get('tytul')})"
                             else:
-                                # ten sam utwor ale zmienily sie serca - aktualizuj tylko serca
                                 if int(existing_data.get("serca") or 0) != int(fav):
                                     needs_update = True
                                     reason = f"LIVE {miejsce} - aktualizacja serc {existing_data.get('serca')} -> {fav}"
@@ -422,7 +427,7 @@ async def check_lista():
                                 "tworca": tworca,
                                 "youtube": yt,
                                 "youtubeUrl": yt,
-                                "pelny": f"{miejsce}. {tytul} - {tworca} {yt}".strip(),
+                                "pelny": f"{miejsce}. {tworca} - {tytul} {yt}".strip(),
                                 "wynik_full": final_list[idx] if idx < len(final_list) else wynik_text,
                                 "serca": int(fav),
                                 "fav_count": int(fav),
@@ -433,13 +438,14 @@ async def check_lista():
                                 "source": "live_top5_z_listy_niedziela_20",
                                 "source_url": used_url,
                                 "edycja": used_url.split("/")[-1] if used_url else "unknown",
-                                "reason": reason
+                                "reason": reason,
+                                "from_lista": True
                             }, merge=True)
-                            print(f"LIVE WINNERS: Wyniki/{miejsce} = {wynik_text} [{fav} serca] ({reason})")
+                            print(f"LIVE WINNERS: Wyniki/{miejsce} = {wynik_text} [{fav} serca] ({reason}) - ROZPOZNANO Z LISTY")
                         else:
                             print(f"LIVE WINNERS: Wyniki/{miejsce} bez zmian - skip")
 
-                    print("LIVE WINNERS: koniec sprawdzania TOP5 w LIVE window")
+                    print("LIVE WINNERS: koniec sprawdzania TOP5 w LIVE window - tylko piosenki z listy")
 
             except Exception as e:
                 print(f"LIVE WINNERS ERROR: {e}")
@@ -818,7 +824,6 @@ HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
 
 async def sync_hall_of_fame_from_lista():
     try:
-        # Teraz bierzemy z Wyniki/1 - tylko po wejsciu w niedzielę
         w1_ref = db.collection("Wyniki").document("1")
         w1_snap = w1_ref.get()
         if not w1_snap.exists:
@@ -831,10 +836,8 @@ async def sync_hall_of_fame_from_lista():
         edycja_str = wd.get("edycja") or ""
         source_url = wd.get("source_url") or ""
 
-        # Numer edycji z Wyniki/1
         m = re.search(r"edycja-(\d+)", edycja_str, re.IGNORECASE) or re.search(r"edycja-(\d+)", source_url, re.IGNORECASE)
         if not m:
-            # fallback - wez z lista/aktualna
             lista_snap = db.collection("lista").document("aktualna").get()
             if lista_snap.exists:
                 ld = lista_snap.to_dict() or {}
@@ -871,7 +874,7 @@ async def sync_hall_of_fame_from_lista():
             "wykonawca": wykonawca,
             "youtubeId": youtubeId,
             "youtubeUrl": youtubeUrl,
-            "source": "Wyniki/1 niedziela 23:00",
+            "source": "Wyniki/1 niedziela 23:00 - z listy",
             "source_url": source_url,
             "edycja": edycja_str,
             "updated_at": firestore.SERVER_TIMESTAMP
@@ -908,7 +911,6 @@ async def sync_hall_of_fame_initial():
 async def check_hall_of_fame():
     try:
         now = datetime.now(WARSAW)
-        # TYLKO niedziela 23:00-23:59
         if now.weekday() != 6 or now.hour != 23:
             return
         day_key = now.strftime("%Y-%m-%d")
@@ -1230,7 +1232,7 @@ async def odzyskaj_test(ctx):
 
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 + HOF NIEDZIELA 23:00 Z WYNIKI/1")
+    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 Z LISTY + HOF NIEDZIELA 23:00 Z WYNIKI/1")
     if not check_lista.is_running():
         check_lista.start()
     if not check_glosowanie_link.is_running():
@@ -1256,7 +1258,7 @@ async def on_ready():
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
 
-    print("READY: HOF tylko niedziela 23:00 z Wyniki/1")
+    print("READY: HOF tylko niedziela 23:00 z Wyniki/1 - Wyniki tylko z listy")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
 
