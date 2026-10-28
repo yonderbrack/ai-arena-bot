@@ -7,8 +7,8 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import discord
-from discord.ext import commands, tasks
+import 【entity-discord¦canonical_name=discord】
+from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -28,7 +28,7 @@ else:
 
 db = firestore.client()
 
-intents = discord.Intents.default()
+intents = 【entity-discord¦canonical_name=discord】.Intents.default()
 intents.message_content = True
 intents.members = True
 
@@ -45,7 +45,6 @@ TOP20_DEFAULT_URL = os.getenv("TOP20_LISTA_URL", f"{TOP20_BASE_URL}/lista/ai-are
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
-# === DODANE - TYLKO TO, RESZTA ORYGINAŁ ===
 def ensure_users_doc(discord_id: str, nick: str):
     try:
         did = str(discord_id)
@@ -113,6 +112,34 @@ def _parse_edycje_for_top20_urls(html: str):
             uniq[u] = num
     sorted_list = sorted(uniq.items(), key=lambda x: x[1], reverse=True)
     return [u for u, _ in sorted_list]
+
+# === NOWE - WYKRYWANIE EDYCJI SPECJALNYCH TOP 10 ===
+def _parse_edycje_for_top10_urls(html: str):
+    urls = []
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/lista/" not in href:
+                continue
+
+            text = (a.get_text(" ", strip=True) + " " + str(a.get("title",""))).upper()
+            parent_text = ""
+            if a.parent:
+                parent_text = a.parent.get_text(" ", strip=True).upper()[:400]
+            combined = text + " " + parent_text
+
+            is_top10_url = "top-10" in href.lower()
+            is_top10_text = "TOP 10" in combined or "TOP-10" in combined or "TOP10" in combined
+
+            if is_top10_url or ("/lista/ai-arena-top-20-" in href and is_top10_text):
+                if href.startswith("/"):
+                    href = TOP20_BASE_URL + href
+                clean = href.split("?")[0].split("#")[0].rstrip("/")
+                urls.append(clean)
+    except Exception as e:
+        print(f"EDYCJE TOP10 parse error: {e}")
+    return list(dict.fromkeys(urls))
 
 def _extract_tracks_from_html(html: str):
     tracks = []
@@ -253,12 +280,20 @@ async def check_lista():
     now = datetime.now(WARSAW)
     try:
         candidate_urls = []
+        candidate_urls_top20 = []
+        candidate_urls_top10 = []
         try:
             edycje_html = await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
-            candidate_urls = _parse_edycje_for_top20_urls(edycje_html)
-            print(f"TOP20 WWW: znaleziono {len(candidate_urls)} linkow TOP20 w /edycje")
+            candidate_urls_top20 = _parse_edycje_for_top20_urls(edycje_html)
+            candidate_urls_top10 = _parse_edycje_for_top10_urls(edycje_html)
+            print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych w /edycje -> {candidate_urls_top10}")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
+
+        candidate_urls = []
+        candidate_urls.extend(candidate_urls_top10)
+        candidate_urls.extend(candidate_urls_top20)
+
         if not candidate_urls:
             print("TOP20 WWW: /edycje nie zwrocilo linkow - generuje zakres 30..1")
             for n in range(30, 0, -1):
@@ -272,14 +307,11 @@ async def check_lista():
             for n in range(30, 0, -1):
                 if n not in existing_nums:
                     candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
-            def get_num(u):
-                m = re.search(r"edycja-(\d+)", u)
-                return int(m.group(1)) if m else 0
-            candidate_urls = sorted(set(candidate_urls), key=get_num, reverse=True)
+            candidate_urls = list(dict.fromkeys(candidate_urls))
 
         final_tracks = []
         used_url = None
-        for url in candidate_urls[:15]:
+        for url in candidate_urls[:20]:
             try:
                 print(f"TOP20 WWW: probuje {url}")
                 html = await asyncio.to_thread(_fetch_sync, url)
@@ -321,7 +353,6 @@ async def check_lista():
                 tid = ""
             else:
                 continue
-            # FIX FORMAT: ujednolicono na TWORCA - TYTUL zeby apka nie miala 0pkt
             if tworca:
                 base = f"{no}. {tworca} - {tytul}"
             else:
@@ -354,6 +385,8 @@ async def check_lista():
         prev_snap = lista_ref.get()
         prev_data = prev_snap.to_dict() if prev_snap.exists else None
 
+        is_top10 = "top-10" in (used_url or "").lower()
+
         lista_ref.set({
             "utwory": final_list,
             "tracks": detailed_tracks,
@@ -369,12 +402,12 @@ async def check_lista():
             "source_url": used_url,
             "source": "aiarenatop10.pl",
             "edycja": used_url.split("/")[-1] if used_url else "unknown",
+            "typ": "TOP10" if is_top10 else "TOP20",
             "last_hearts_update": firestore.SERVER_TIMESTAMP
         })
 
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url} + serca")
 
-        # === NOWA LOGIKA LIVE: tylko niedziela po 20:00, pojedynczo + weryfikacja z listy ===
         is_live_window = (now.weekday() == 6 and now.hour >= 20)
 
         if not is_live_window:
@@ -386,7 +419,6 @@ async def check_lista():
                     print("LIVE WINNERS: LIVE window ale brak top5 - skip")
                 else:
                     print(f"LIVE WINNERS: LIVE window aktywny - sprawdzam TOP5 pojedynczo z {used_url} - weryfikacja czy piosenka z listy")
-                    # mapa track_id z lista/aktualna zeby tylko piosenki z listy wchodzily do Wyniki
                     lista_track_ids = set([d["track_id"] for d in detailed_tracks if d["track_id"]])
                     for idx, item in enumerate(top5):
                         if len(item) == 6:
@@ -395,7 +427,6 @@ async def check_lista():
                             no, tytul, tworca, yt = item
                             fav = 0
                             tid = ""
-                        # FIX: tylko piosenka która jest w lista/aktualna może wejść do Wyniki
                         if lista_track_ids and tid and tid not in lista_track_ids:
                             print(f"LIVE WINNERS: SKIP {idx+1} - track_id {tid} nie ma w lista/aktualna - nie wstawiam")
                             continue
@@ -783,8 +814,9 @@ async def sync_archiwum():
                 if not raw:
                     continue
                 upper = raw.upper()
-                if upper.startswith("TOP 10") or "LISTA PRZEBOJÓW" in upper or raw.startswith("🏆"):
-                    continue
+                if upper.startswith("TOP 10") or upper.startswith("TOP 20") or "LISTA PRZEBOJÓW" in upper or raw.startswith("🏆"):
+                    if " - " not in raw and "\t" not in raw and "  " not in raw:
+                        continue
                 raw_no_num = re.sub(r"^\s*\d+[\.\)]?\s*", "", raw).strip()
                 if not raw_no_num:
                     continue
@@ -819,8 +851,6 @@ async def sync_archiwum():
 
 HALL_OF_FAME_COLLECTION = "HALL OF FAME"
 HALL_OF_FAME_SYSTEM_DOC = "_system_hall_of_fame"
-
-# === FIX HOF: NIEDZIELA 23:00 Z WYNIKI/1 ===
 
 async def sync_hall_of_fame_from_lista():
     try:
@@ -1232,7 +1262,7 @@ async def odzyskaj_test(ctx):
 
 @bot.event
 async def on_ready():
-    print(f"READY {bot.user} - WWW TOP20 + YT + LIVE TOP5 Z LISTY + HOF NIEDZIELA 23:00 Z WYNIKI/1")
+    print(f"READY {bot.user} - WWW TOP20 + TOP10 SPECJALNE + YT + LIVE TOP5 Z LISTY + HOF NIEDZIELA 23:00 Z WYNIKI/1")
     if not check_lista.is_running():
         check_lista.start()
     if not check_glosowanie_link.is_running():
@@ -1261,4 +1291,3 @@ async def on_ready():
     print("READY: HOF tylko niedziela 23:00 z Wyniki/1 - Wyniki tylko z listy")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
-
