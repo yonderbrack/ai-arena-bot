@@ -4,6 +4,8 @@ import base64
 import hashlib
 import re
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -15,6 +17,27 @@ from firebase_admin import credentials, firestore
 
 import requests
 from bs4 import BeautifulSoup
+
+# === HOSTLESS HEALTH CHECK - musi otworzyć port dla TCP check ===
+PORT = int(os.getenv("PORT", "8080"))
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK - AI Arena Bot running")
+    def log_message(self, format, *args):
+        return
+
+def start_health_server():
+    try:
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        print(f"HEALTH: HTTP server listening on 0.0.0.0:{PORT}")
+    except Exception as e:
+        print(f"HEALTH error: {e}")
 
 b64 = os.getenv("FIREBASE_B64")
 if b64:
@@ -28,7 +51,7 @@ else:
 
 db = firestore.client()
 
-intents = 【entity-discord¦canonical_name=discord】.Intents.default()
+intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
@@ -1173,7 +1196,7 @@ async def on_message(message):
             stored_discord_id = str(user_data.get("discordId") or user_data.get("discord_id") or "")
             nick = str(user_data.get("nick") or "").strip()
             if stored_discord_id != discord_id:
-                await message.author.send("❌ To konto AI Arena FM nie jest jeszcze przypisane do tego konta Discord.")
+                await message.author.send("❌ To konto AI Arena FM nie jest jeszcze przypisane do tego konta 【entity-Discord¦canonical_name=discord】.")
                 return
             if not nick:
                 await message.author.send("❌ Konto nie posiada nicku.")
@@ -1290,4 +1313,5 @@ async def on_ready():
 
     print("READY: HOF tylko niedziela 23:00 z Wyniki/1 - Wyniki tylko z listy")
 
+start_health_server()
 bot.run(os.getenv("DISCORD_TOKEN"))
