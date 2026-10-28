@@ -205,7 +205,7 @@ def _extract_tracks_from_html(html: str):
                 inner = str(art)
                 m = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', inner)
                 if m:
-                    youtube_url = m.group(0).rstrip('"\'")
+                    youtube_url = m.group(0).rstrip("\"'")
             fav_count = None
             heart_terms = ("fav", "heart", "serc", "like", "love")
             count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
