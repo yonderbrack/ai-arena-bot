@@ -9,8 +9,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import 【entity-discord¦canonical_name=discord】
-from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
+import discord
+from discord.ext import commands, tasks
 
 import firebase_admin
 from firebase_admin import credentials, firestore
