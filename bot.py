@@ -205,7 +205,7 @@ def _extract_tracks_from_html(html: str):
                 inner = str(art)
                 m = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', inner)
                 if m:
-                    youtube_url = m.group(0).rstrip('"\'')
+                    youtube_url = m.group(0).rstrip('"\'")
             fav_count = None
             heart_terms = ("fav", "heart", "serc", "like", "love")
             count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
@@ -1196,7 +1196,7 @@ async def on_message(message):
             stored_discord_id = str(user_data.get("discordId") or user_data.get("discord_id") or "")
             nick = str(user_data.get("nick") or "").strip()
             if stored_discord_id != discord_id:
-                await message.author.send("❌ To konto AI Arena FM nie jest jeszcze przypisane do tego konta 【entity-Discord¦canonical_name=discord】.")
+                await message.author.send("❌ To konto AI Arena FM nie jest jeszcze przypisane do tego konta Discord.")
                 return
             if not nick:
                 await message.author.send("❌ Konto nie posiada nicku.")
@@ -1315,3 +1315,4 @@ async def on_ready():
 
 start_health_server()
 bot.run(os.getenv("DISCORD_TOKEN"))
+
