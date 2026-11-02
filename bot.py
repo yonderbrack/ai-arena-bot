@@ -5,12 +5,13 @@ import hashlib
 import re
 import asyncio
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import discord
-from discord.ext import commands, tasks
+import 【entity-discord¦canonical_name=discord】
+from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -19,7 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # === HOSTLESS HEALTH CHECK - musi otworzyć port dla TCP check ===
-PORT = int(os.getenv("PORT", "8080"))
+PORT = int(os.getenv("PORT", "8000"))
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -33,7 +34,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 def start_health_server():
     try:
         server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t = threading.Thread(target=server.serve_forever, daemon=False)
         t.start()
         print(f"HEALTH: HTTP server listening on 0.0.0.0:{PORT}")
     except Exception as e:
@@ -51,7 +52,7 @@ else:
 
 db = firestore.client()
 
-intents = discord.Intents.default()
+intents = 【entity-discord¦canonical_name=discord】.Intents.default()
 intents.message_content = True
 intents.members = True
 
@@ -136,7 +137,6 @@ def _parse_edycje_for_top20_urls(html: str):
     sorted_list = sorted(uniq.items(), key=lambda x: x[1], reverse=True)
     return [u for u, _ in sorted_list]
 
-# === NOWE - WYKRYWANIE EDYCJI SPECJALNYCH TOP 10 ===
 def _parse_edycje_for_top10_urls(html: str):
     urls = []
     try:
@@ -145,16 +145,13 @@ def _parse_edycje_for_top10_urls(html: str):
             href = a["href"]
             if "/lista/" not in href:
                 continue
-
             text = (a.get_text(" ", strip=True) + " " + str(a.get("title",""))).upper()
             parent_text = ""
             if a.parent:
                 parent_text = a.parent.get_text(" ", strip=True).upper()[:400]
             combined = text + " " + parent_text
-
             is_top10_url = "top-10" in href.lower()
             is_top10_text = "TOP 10" in combined or "TOP-10" in combined or "TOP10" in combined
-
             if is_top10_url or ("/lista/ai-arena-top-20-" in href and is_top10_text):
                 if href.startswith("/"):
                     href = TOP20_BASE_URL + href
@@ -209,7 +206,6 @@ def _extract_tracks_from_html(html: str):
             fav_count = None
             heart_terms = ("fav", "heart", "serc", "like", "love")
             count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
-
             for el in [art] + art.find_all(True):
                 if fav_count is not None:
                     break
@@ -228,7 +224,6 @@ def _extract_tracks_from_html(html: str):
                             break
                 if fav_count is not None:
                     break
-
             if fav_count is None:
                 for el in art.find_all(True):
                     attrs = el.attrs or {}
@@ -243,7 +238,6 @@ def _extract_tracks_from_html(html: str):
                     if mm:
                         fav_count = int(mm.group())
                         break
-
             if fav_count is None:
                 fav_el = art.select_one("span.fav-count, .fav-count")
                 if fav_el is not None:
@@ -251,13 +245,11 @@ def _extract_tracks_from_html(html: str):
                     mm = re.search(r"\d+", fav_text)
                     if mm:
                         fav_count = int(mm.group())
-
             if fav_count is None:
                 article_text = art.get_text(" ", strip=True)
                 mm = re.search(r"[♥❤♡]\s*(\d+)", article_text)
                 if mm:
                     fav_count = int(mm.group(1))
-
             if fav_count is None:
                 raw_article = str(art)
                 mm = re.search(
@@ -267,7 +259,6 @@ def _extract_tracks_from_html(html: str):
                 )
                 if mm:
                     fav_count = int(mm.group(1))
-
             if fav_count is None:
                 fav_count = 0
                 print(f"TOP20 WWW: UWAGA — nie znaleziono liczby serduszek dla: {tytul.strip()} (ID={track_id.strip()})")
@@ -312,11 +303,9 @@ async def check_lista():
             print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych w /edycje -> {candidate_urls_top10}")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
-
         candidate_urls = []
         candidate_urls.extend(candidate_urls_top10)
         candidate_urls.extend(candidate_urls_top20)
-
         if not candidate_urls:
             print("TOP20 WWW: /edycje nie zwrocilo linkow - generuje zakres 30..1")
             for n in range(30, 0, -1):
@@ -331,7 +320,6 @@ async def check_lista():
                 if n not in existing_nums:
                     candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
             candidate_urls = list(dict.fromkeys(candidate_urls))
-
         final_tracks = []
         used_url = None
         for url in candidate_urls[:20]:
@@ -359,11 +347,9 @@ async def check_lista():
                     continue
                 print(f"TOP20 WWW: blad {url}: {e}")
                 continue
-
         if not final_tracks:
             print(f"TOP20 WWW: nie znaleziono zadnej listy z utworami - pomijam zapis")
             return
-
         final_list = []
         detailed_tracks = []
         serca = []
@@ -401,15 +387,8 @@ async def check_lista():
                 "trackId": tid,
                 "id": tid
             })
-
         print(f"TOP20 WWW: Znalazlem {len(final_list)} utworow z {used_url} - serca: {serca[:5]}")
-
         lista_ref = db.collection("lista").document("aktualna")
-        prev_snap = lista_ref.get()
-        prev_data = prev_snap.to_dict() if prev_snap.exists else None
-
-        is_top10 = "top-10" in (used_url or "").lower()
-
         lista_ref.set({
             "utwory": final_list,
             "tracks": detailed_tracks,
@@ -425,87 +404,10 @@ async def check_lista():
             "source_url": used_url,
             "source": "aiarenatop10.pl",
             "edycja": used_url.split("/")[-1] if used_url else "unknown",
-            "typ": "TOP10" if is_top10 else "TOP20",
+            "typ": "TOP10" if "top-10" in (used_url or "").lower() else "TOP20",
             "last_hearts_update": firestore.SERVER_TIMESTAMP
         })
-
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url} + serca")
-
-        is_live_window = (now.weekday() == 6 and now.hour >= 20)
-
-        if not is_live_window:
-            print(f"LIVE WINNERS: SKIP - nie niedziela po 20:00 (teraz {now.strftime('%A %H:%M:%S')} Europe/Warsaw) - Wyniki czekaja na LIVE")
-        else:
-            try:
-                top5 = final_tracks[:5]
-                if not top5:
-                    print("LIVE WINNERS: LIVE window ale brak top5 - skip")
-                else:
-                    print(f"LIVE WINNERS: LIVE window aktywny - sprawdzam TOP5 pojedynczo z {used_url} - weryfikacja czy piosenka z listy")
-                    lista_track_ids = set([d["track_id"] for d in detailed_tracks if d["track_id"]])
-                    for idx, item in enumerate(top5):
-                        if len(item) == 6:
-                            no, tytul, tworca, yt, fav, tid = item
-                        else:
-                            no, tytul, tworca, yt = item
-                            fav = 0
-                            tid = ""
-                        if lista_track_ids and tid and tid not in lista_track_ids:
-                            print(f"LIVE WINNERS: SKIP {idx+1} - track_id {tid} nie ma w lista/aktualna - nie wstawiam")
-                            continue
-                        miejsce = idx + 1
-                        doc_ref = db.collection("Wyniki").document(str(miejsce))
-                        existing_snap = doc_ref.get()
-                        existing_data = existing_snap.to_dict() if existing_snap.exists else None
-
-                        needs_update = False
-                        reason = ""
-                        if not existing_data:
-                            needs_update = True
-                            reason = f"LIVE {miejsce} - pierwsze wstawienie w niedziele po 20:00 - z listy"
-                        else:
-                            if existing_data.get("tytul") != tytul or existing_data.get("tworca") != tworca or existing_data.get("track_id") != tid:
-                                needs_update = True
-                                reason = f"LIVE {miejsce} - wskoczyl nowy z listy: {tworca} - {tytul} (bylo {existing_data.get('tworca')} - {existing_data.get('tytul')})"
-                            else:
-                                if int(existing_data.get("serca") or 0) != int(fav):
-                                    needs_update = True
-                                    reason = f"LIVE {miejsce} - aktualizacja serc {existing_data.get('serca')} -> {fav}"
-
-                        if needs_update:
-                            wynik_text = f"{tworca} - {tytul}" if tworca else tytul
-                            doc_ref.set({
-                                "miejsce": miejsce,
-                                "wynik": wynik_text,
-                                "tytul": tytul,
-                                "tworca": tworca,
-                                "youtube": yt,
-                                "youtubeUrl": yt,
-                                "pelny": f"{miejsce}. {tworca} - {tytul} {yt}".strip(),
-                                "wynik_full": final_list[idx] if idx < len(final_list) else wynik_text,
-                                "serca": int(fav),
-                                "fav_count": int(fav),
-                                "hearts": int(fav),
-                                "track_id": tid,
-                                "updated_at": firestore.SERVER_TIMESTAMP,
-                                "updated_day": now.strftime("%d.%m.%Y %H:%M:%S"),
-                                "source": "live_top5_z_listy_niedziela_20",
-                                "source_url": used_url,
-                                "edycja": used_url.split("/")[-1] if used_url else "unknown",
-                                "reason": reason,
-                                "from_lista": True
-                            }, merge=True)
-                            print(f"LIVE WINNERS: Wyniki/{miejsce} = {wynik_text} [{fav} serca] ({reason}) - ROZPOZNANO Z LISTY")
-                        else:
-                            print(f"LIVE WINNERS: Wyniki/{miejsce} bez zmian - skip")
-
-                    print("LIVE WINNERS: koniec sprawdzania TOP5 w LIVE window - tylko piosenki z listy")
-
-            except Exception as e:
-                print(f"LIVE WINNERS ERROR: {e}")
-                import traceback
-                traceback.print_exc()
-
     except Exception as e:
         print(f"ERROR lista WWW: {e}")
         import traceback
@@ -570,13 +472,6 @@ async def check_glosowanie_link():
             "source_channel_name": "linki-do-glosowania",
             "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
-        try:
-            db.collection("config").document("glosuj").set({
-                "link": found_link,
-                "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-        except Exception:
-            pass
         print(f"GLOSOWANIE: ZAPISANO NOWY LINK {found_link} z msg {found_msg_id} ({found_msg_date})")
     except Exception as e:
         print(f"ERROR glosowanie_link: {e}")
@@ -677,7 +572,6 @@ async def sync_members():
             print(f"ERROR członkowie: nie znaleziono serwera {guild_id}")
             return
         print(f"CZŁONKOWIE: znaleziono serwer: {guild.name} ({guild.id})")
-        print("CZŁONKOWIE: pobieram listę przez Discord API...")
         members = []
         async for member in guild.fetch_members(limit=None):
             members.append(member)
@@ -733,7 +627,6 @@ async def on_member_join(member):
     try:
         if member.bot:
             return
-        print(f"CZŁONKOWIE: JOIN {member.display_name} ({member.id})")
         db.collection("czlonkowie").document(str(member.id)).set({
             "discord_id": str(member.id),
             "username": member.name,
@@ -758,7 +651,6 @@ async def on_member_update(before, after):
         if after.bot:
             return
         if before.display_name != after.display_name or before.name != after.name:
-            print(f"CZŁONKOWIE: UPDATE nick {before.display_name} -> {after.display_name} ({after.id})")
             db.collection("czlonkowie").document(str(after.id)).set({
                 "username": after.name,
                 "username_lower": after.name.lower(),
@@ -775,7 +667,6 @@ async def on_member_update(before, after):
 @bot.event
 async def on_member_remove(member):
     try:
-        print(f"CZŁONKOWIE: LEAVE {member.display_name} ({member.id}) - oznaczam jako inactive")
         db.collection("czlonkowie").document(str(member.id)).set({
             "active": False,
             "left_at": firestore.SERVER_TIMESTAMP,
@@ -822,7 +713,6 @@ async def sync_archiwum():
         print("ARCHIWUM: rozpoczynam pobieranie historii kanału...")
         cid = 1518213312234655825
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        print(f"ARCHIWUM: kanał {ch.name} ({ch.id})")
         entries = []
         total_msgs = 0
         async for msg in ch.history(limit=None):
@@ -859,7 +749,6 @@ async def sync_archiwum():
             if key not in unique:
                 unique[key] = True
                 display_entries.append({"wykonawca": wykonawca, "tytul": tytul})
-        print(f"ARCHIWUM: po usunięciu duplikatów {len(display_entries)} utworów")
         if len(display_entries) == 0:
             print("ARCHIWUM: 0 utworów - nie nadpisuje Firebase!")
             return
@@ -888,7 +777,6 @@ async def sync_hall_of_fame_from_lista():
         youtubeUrl = wd.get("youtubeUrl") or wd.get("youtube") or ""
         edycja_str = wd.get("edycja") or ""
         source_url = wd.get("source_url") or ""
-
         m = re.search(r"edycja-(\d+)", edycja_str, re.IGNORECASE) or re.search(r"edycja-(\d+)", source_url, re.IGNORECASE)
         if not m:
             lista_snap = db.collection("lista").document("aktualna").get()
@@ -898,28 +786,23 @@ async def sync_hall_of_fame_from_lista():
                 m = re.search(r"edycja-(\d+)", fallback_ed, re.IGNORECASE)
                 if m and not edycja_str:
                     edycja_str = fallback_ed
-
         if not m:
             print(f"HOF Z WYNIKI/1: nie moge wyciagnac numeru edycji z {edycja_str} / {source_url}")
             return False
-
         numer = int(m.group(1))
         doc_id = f"{numer:03d}"
         doc_ref = db.collection(HALL_OF_FAME_COLLECTION).document(doc_id)
         if doc_ref.get().exists:
             print(f"HOF Z WYNIKI/1: {doc_id} juz istnieje - skip")
             return False
-
         if not tytul:
             print("HOF Z WYNIKI/1: brak tytulu w Wyniki/1 - skip")
             return False
-
         youtubeId = ""
         if youtubeUrl:
             mm = re.search(r"(?:v=|youtu\.be/|shorts/)([^&\s\?\))]+)", youtubeUrl)
             if mm:
                 youtubeId = mm.group(1)
-
         doc_ref.set({
             "notowanie": f"TOP 20 #{doc_id}",
             "numerNotowania": numer,
@@ -979,8 +862,6 @@ async def check_hall_of_fame():
         if success:
             sys_ref.set({"last_hof_day": day_key, "last_check": firestore.SERVER_TIMESTAMP}, merge=True)
             print(f"HALL OF FAME: wstawiono - dzien {day_key} oznaczony")
-        else:
-            print("HALL OF FAME: brak nowego wpisu - ponowie za 5 min")
     except Exception as e:
         print(f"ERROR HOF checker: {e}")
         import traceback
@@ -1021,7 +902,6 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
                 if last_dt:
                     diff = (now - last_dt).total_seconds()
                     if diff < RECOVERY_DEBOUNCE_SECONDS:
-                        print(f"RECOVERY: ANTY-SPAM pomijam {discord_id} - DM wyslano {int(diff)}s temu")
                         recovery_ref.set({"status": "WAITING_CONFIRMATION"}, merge=True)
                         return True
         except Exception as e:
@@ -1050,14 +930,11 @@ async def create_recovery_request(discord_id: int, nick: str, source: str = "app
                 "Jeśli to Ty chcesz utworzyć nowy PIN, odpowiedz tutaj:\n\n**TAK**\n\n"
                 "Jeśli nie zgłaszałeś tej prośby, zignoruj tę wiadomość."
             )
-            print(f"RECOVERY: wysłano DM do {user} ({discord_id})")
             return True
         except discord.Forbidden:
-            print(f"RECOVERY: użytkownik {discord_id} ma zablokowane DM.")
             recovery_ref.set({"status": "DM_FAILED"}, merge=True)
             return False
         except Exception as e:
-            print(f"RECOVERY: błąd wysyłania DM: {e}")
             recovery_ref.set({"status": "DM_FAILED"}, merge=True)
             return False
     except Exception as e:
@@ -1088,13 +965,11 @@ async def check_recovery_requests():
         docs = docs_pending + docs_sending
         if not docs:
             return
-        print(f"RECOVERY: znaleziono {len(docs)} zadan PENDING/SENDING")
         for doc in docs:
             data = doc.to_dict() or {}
             discord_id = str(data.get("discordId") or doc.id)
             nick = str(data.get("nick") or "").strip()
             if not discord_id or not nick:
-                print(f"RECOVERY: błędne żądanie {doc.id}")
                 doc.reference.set({"status": "ERROR", "error": "Brak discordId lub nick"}, merge=True)
                 continue
             last_sent = data.get("lastDmSentAt") or data.get("lastDmSentAtMs") or data.get("sentAt")
@@ -1102,7 +977,6 @@ async def check_recovery_requests():
             if last_dt:
                 diff = (datetime.now(timezone.utc) - last_dt).total_seconds()
                 if diff < RECOVERY_DEBOUNCE_SECONDS:
-                    print(f"RECOVERY: SKIP PENDING {discord_id} - anty-spam {int(diff)}s")
                     doc.reference.set({"status": "WAITING_CONFIRMATION"}, merge=True)
                     continue
             doc.reference.set({
@@ -1114,7 +988,6 @@ async def check_recovery_requests():
             try:
                 discord_int = int(discord_id)
             except:
-                print(f"RECOVERY: bledny discordId {discord_id}")
                 continue
             await create_recovery_request(discord_int, nick, source="app")
     except Exception as e:
@@ -1179,8 +1052,8 @@ async def on_message(message):
             exp_dt = _parse_last_sent(expires_at)
             if exp_dt and datetime.now(timezone.utc) > exp_dt:
                 is_expired = True
-        except Exception as e:
-            print(f"RECOVERY: błąd sprawdzania wygaśnięcia: {e}")
+        except Exception:
+            pass
     if is_expired or status in ("EXPIRED", "DONE", "ERROR", "DM_FAILED"):
         if ("odzyskaj pin" in content_lower or "odzyskaj_pin" in content_lower or content_lower in ("odzyskaj", "!odzyskaj", "!odzyskaj_pin") or "nie pamiętam pin" in content_lower or "nie pamietam pin" in content_lower):
             try:
@@ -1298,21 +1171,38 @@ async def on_ready():
         check_hall_of_fame.start()
     if not sync_members_loop.is_running():
         sync_members_loop.start()
-
     print("TEST: START sync_members()")
     await sync_members()
     print("TEST: KONIEC sync_members()")
-
     print("TEST: START sync_archiwum()")
     await sync_archiwum()
     print("TEST: KONIEC sync_archiwum()")
-
     print("TEST: START sync_hall_of_fame_initial()")
     await sync_hall_of_fame_initial()
     print("TEST: KONIEC sync_hall_of_fame_initial()")
-
     print("READY: HOF tylko niedziela 23:00 z Wyniki/1 - Wyniki tylko z listy")
 
 start_health_server()
-bot.run(os.getenv("DISCORD_TOKEN"))
 
+# === FIX TOKEN - usuwa entery, spacje i cudzyslowy ===
+_raw_token = os.getenv("DISCORD_TOKEN") or ""
+_token = _raw_token.strip().strip('"').strip("'").strip()
+if not _token:
+    print("FATAL: DISCORD_TOKEN pusty - ustaw w Hostless Environment variables")
+    while True:
+        time.sleep(60)
+
+print(f"DEBUG TOKEN len={len(_token)} kropki={_token.count('.')} start={_token[:6]}")
+
+try:
+    bot.run(_token)
+except discord.errors.LoginFailure as e:
+    print(f"FATAL LoginFailure: {e} - token unieważniony lub zły format")
+    while True:
+        time.sleep(60)
+except Exception as e:
+    print(f"FATAL bot.run error: {e}")
+    import traceback
+    traceback.print_exc()
+    while True:
+       
