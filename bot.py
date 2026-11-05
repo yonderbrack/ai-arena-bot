@@ -19,7 +19,6 @@ from firebase_admin import credentials, firestore
 import requests
 from bs4 import BeautifulSoup
 
-# === HOSTLESS HEALTH CHECK - musi otworzyc port dla TCP check ===
 PORT = int(os.getenv("PORT", "8000"))
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -222,8 +221,6 @@ def _extract_tracks_from_html(html: str):
                         if mm:
                             fav_count = int(mm.group())
                             break
-                if fav_count is not None:
-                    break
             if fav_count is None:
                 for el in art.find_all(True):
                     attrs = el.attrs or {}
@@ -252,11 +249,7 @@ def _extract_tracks_from_html(html: str):
                     fav_count = int(mm.group(1))
             if fav_count is None:
                 raw_article = str(art)
-                mm = re.search(
-                    r'class=["\'][^"\']*\bfav-count\b[^"\']*["\'][^>]*>\s*(\d+)\s*<',
-                    raw_article,
-                    re.IGNORECASE,
-                )
+                mm = re.search(r'class=["\'][^"\']*\bfav-count\b[^"\']*["\'][^>]*>\s*(\d+)\s*<', raw_article, re.IGNORECASE)
                 if mm:
                     fav_count = int(mm.group(1))
             if fav_count is None:
@@ -302,8 +295,8 @@ async def check_lista():
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
         candidate_urls = []
-        candidate_urls.extend(candidate_urls_top10)
         candidate_urls.extend(candidate_urls_top20)
+        candidate_urls.extend(candidate_urls_top10)
         if not candidate_urls:
             for n in range(35, 0, -1):
                 candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
@@ -319,7 +312,6 @@ async def check_lista():
             candidate_urls = list(dict.fromkeys(candidate_urls))
         final_tracks = []
         used_url = None
-        # FIX: bylo [:20] - ucinane nowe edycje
         for url in candidate_urls:
             try:
                 print(f"TOP20 WWW: probuje {url}")
