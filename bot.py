@@ -10,8 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import discord
-from discord.ext import commands, tasks
+import 【entity-discord¦canonical_name=discord】
+from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -305,7 +305,7 @@ async def check_lista():
         candidate_urls.extend(candidate_urls_top10)
         candidate_urls.extend(candidate_urls_top20)
         if not candidate_urls:
-            for n in range(30, 0, -1):
+            for n in range(35, 0, -1):
                 candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
         else:
             existing_nums = set()
@@ -313,21 +313,20 @@ async def check_lista():
                 m = re.search(r"edycja-(\d+)", u)
                 if m:
                     existing_nums.add(int(m.group(1)))
-            for n in range(30, 0, -1):
+            for n in range(35, 0, -1):
                 if n not in existing_nums:
                     candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
             candidate_urls = list(dict.fromkeys(candidate_urls))
         final_tracks = []
         used_url = None
-        for url in candidate_urls[:20]:
+        # FIX: bylo [:20] - ucinane nowe edycje
+        for url in candidate_urls:
             try:
                 print(f"TOP20 WWW: probuje {url}")
                 html = await asyncio.to_thread(_fetch_sync, url)
-                if "Lista utworów będzie widoczna po rozpoczęciu głosowania" in html:
-                    continue
                 tracks = _extract_tracks_from_html(html)
                 print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
-                if len(tracks) >= 5:
+                if len(tracks) >= 1:
                     final_tracks = tracks
                     used_url = url
                     break
@@ -582,4 +581,3 @@ except Exception as e:
     traceback.print_exc()
     while True:
         time.sleep(60)
-
