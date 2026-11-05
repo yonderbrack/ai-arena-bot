@@ -10,8 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import 【entity-discord¦canonical_name=discord】
-from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
+import discord
+from discord.ext import commands, tasks
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -291,7 +291,7 @@ async def check_lista():
             edycje_html = await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
             candidate_urls_top20 = _parse_edycje_for_top20_urls(edycje_html)
             candidate_urls_top10 = _parse_edycje_for_top10_urls(edycje_html)
-            print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych w /edycje -> {candidate_urls_top10}")
+            print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
         candidate_urls = []
@@ -573,3 +573,4 @@ except Exception as e:
     traceback.print_exc()
     while True:
         time.sleep(60)
+
