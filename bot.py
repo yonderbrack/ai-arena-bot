@@ -2,8 +2,8 @@ import os, json, base64, hashlib, re, asyncio, threading, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import discord
-from discord.ext import commands, tasks
+import 【entity-discord¦canonical_name=discord】
+from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
 import firebase_admin
 from firebase_admin import credentials, firestore
 import requests
@@ -29,7 +29,7 @@ if b64:
 else:
     if not firebase_admin._apps: firebase_admin.initialize_app()
 db=firestore.client()
-intents=discord.Intents.default()
+intents=【entity-discord¦canonical_name=discord】.Intents.default()
 intents.message_content=True
 intents.members=True
 bot=commands.Bot(command_prefix="!",intents=intents)
@@ -57,6 +57,12 @@ def _fetch_sync(url):
         r.raise_for_status()
         return r.text
 
+def _fetch_sync_debug(url):
+    html=_fetch_sync(url)
+    low=html.lower()
+    is_cf="cf-challenge" in low or "attention required" in low or "just a moment" in low
+    return html, len(html), is_cf
+
 def _parse_edycje_for_top10_urls(html):
     urls=[]
     try:
@@ -70,6 +76,37 @@ def _parse_edycje_for_top10_urls(html):
                 urls.append(href.split("?")[0].split("#")[0].rstrip("/"))
     except: pass
     return list(dict.fromkeys(urls))
+
+def _parse_edycje(html):
+    soup=BeautifulSoup(html,"html.parser")
+    out=[]
+    seen=set()
+    for a in soup.find_all("a",href=True):
+        href=a["href"]
+        if "/lista/" not in href: continue
+        if href.startswith("/"): href=TOP20_BASE_URL+href
+        url=href.split("?")[0].split("#")[0].rstrip("/")
+        if url in seen: continue
+        seen.add(url)
+        card=a
+        for _ in range(4):
+            if card.parent: card=card.parent
+        card_text=card.get_text(" ",strip=True) if card else ""
+        title=""
+        h=card.find(["h2","h3","h4"]) if card else None
+        if h: title=h.get_text(" ",strip=True)
+        if not title: title=a.get_text(" ",strip=True) or url.split("/")[-1]
+        low=card_text.lower()
+        if "głosowanie trwa" in low or "trwa głosowanie" in low:
+            status="voting"
+        elif "zamknięta" in low or "zamknięty" in low:
+            status="closed"
+        elif "start" in low or "poczekalnia" in low or "zgłoszenia" in low:
+            status="upcoming"
+        else:
+            status="unknown"
+        out.append({"url":url,"title":title,"status":status,"card":card_text[:300]})
+    return out
 
 def _extract_tracks_from_html(html):
     tracks=[]
@@ -101,54 +138,112 @@ def _extract_tracks_from_html(html):
     tracks.sort(key=lambda x:x[0])
     return tracks
 
+def _to_int(v):
+    try: return int(v or 0)
+    except: return 0
+
+def _unescape(s):
+    try: return json.loads(f'"{s}"')
+    except: return s
+
+def _tracks_from_json_obj(obj,out):
+    if isinstance(obj,dict):
+        keys={str(k).lower():k for k in obj.keys()}
+        tytul_k=next((keys[k] for k in keys if k in ("tytul","tytuł","title","nazwa","name")),None)
+        tworca_k=next((keys[k] for k in keys if k in ("tworca","twórca","artist","autor","wykonawca","creator")),None)
+        if tytul_k and obj.get(tytul_k):
+            out.append({"tytul":str(obj.get(tytul_k,"")).strip(),"tworca":str(obj.get(tworca_k,"")).strip() if tworca_k else "","youtube":str(obj.get("youtube",obj.get("yt",obj.get("youtube_url",""))) or "").strip(),"fav_count":_to_int(obj.get("fav_count",obj.get("favs",obj.get("serca",0)))),"track_id":str(obj.get("track_id",obj.get("id","")) or "").strip(),"no":_to_int(obj.get("no",obj.get("position",obj.get("miejsce",0))))})
+            return
+        for v in obj.values(): _tracks_from_json_obj(v,out)
+    elif isinstance(obj,list):
+        for v in obj: _tracks_from_json_obj(v,out)
+
+def _extract_tracks_v2(html):
+    tracks=[]
+    soup=BeautifulSoup(html,"html.parser")
+    script=soup.find("script",id="__NEXT_DATA__")
+    if script and script.string:
+        try: _tracks_from_json_obj(json.loads(script.string),tracks)
+        except Exception as e: print(f"PARSE NEXT_DATA blad: {e}")
+    if not tracks:
+        for m in re.finditer(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',html,re.S):
+            chunk=m.group(1)
+            try:
+                decoded=json.loads(f'"{chunk}"')
+                if decoded.strip().startswith(("{","[")):
+                    _tracks_from_json_obj(json.loads(decoded),tracks)
+            except: pass
+    if not tracks:
+        pairs=re.findall(r'"tytul"\s*:\s*"((?:\\.|[^"\\])*)".{0,400}?"tworca"\s*:\s*"((?:\\.|[^"\\])*)"',html)
+        pairs+= [(b,a) for a,b in re.findall(r'"tworca"\s*:\s*"((?:\\.|[^"\\])*)".{0,400}?"tytul"\s*:\s*"((?:\\.|[^"\\])*)"',html)]
+        for tytul,tworca in pairs:
+            tracks.append({"tytul":_unescape(tytul),"tworca":_unescape(tworca),"youtube":"","fav_count":0,"track_id":"","no":0})
+    if not tracks:
+        old=_extract_tracks_from_html(html)
+        for no,tytul,tworca,yt,fav,tid in old:
+            tracks.append({"no":no,"tytul":tytul,"tworca":tworca,"youtube":yt,"fav_count":fav,"track_id":tid})
+    seen=set(); clean=[]
+    for i,t in enumerate(tracks,1):
+        key=(t["tworca"].lower(),t["tytul"].lower())
+        if key in seen or not t["tytul"]: continue
+        seen.add(key)
+        if not t.get("no"): t["no"]=i
+        clean.append(t)
+    clean.sort(key=lambda x:x["no"])
+    return clean
+
 @tasks.loop(seconds=60)
 async def check_lista():
     now=datetime.now(WARSAW)
+    debug={"last_run":now.strftime("%d.%m.%Y %H:%M:%S"),"candidates":[],"errors":[]}
     try:
-        # NAJNOWSZE TOP20 NAJPIERW - bez parsowania /edycje
-        candidate_urls=[]
-        for n in range(35,0,-1):
-            candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
-        # dopisz TOP10 specjalne na koniec jako fallback
-        try:
-            html=await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
-            top10=_parse_edycje_for_top10_urls(html)
-            candidate_urls.extend(top10)
-            print(f"TOP20 FIX: brute 35..1 + {len(top10)} TOP10 special")
-        except Exception as e:
-            print(f"TOP10 parse blad {e}")
-
-        for url in candidate_urls:
+        html_edycje,ln,is_cf=await asyncio.to_thread(_fetch_sync_debug,TOP20_EDYCJE_URL)
+        print(f"EDYCJE: len={ln} cf={is_cf}")
+        candidates=_parse_edycje(html_edycje)
+        print(f"EDYCJE: znaleziono {len(candidates)} linkow /lista/: {[(c['status'],c['title']) for c in candidates]}")
+        debug["candidates"]=candidates
+        ordered=[c for c in candidates if c["status"]=="voting"]+[c for c in candidates if c["status"]=="closed"]+[c for c in candidates if c["status"] in ("unknown",)]
+        for c in ordered:
+            url=c["url"]
             try:
-                print(f"TOP20 WWW: probuje {url}")
-                html=await asyncio.to_thread(_fetch_sync, url)
-                tracks=_extract_tracks_from_html(html)
-                print(f"TOP20 WWW: {url} -> {len(tracks)} utworow")
+                print(f"TOP20 WWW: probuje {c['status']} {c['title']} {url}")
+                html,hlen,cf=await asyncio.to_thread(_fetch_sync_debug,url)
+                tracks=_extract_tracks_v2(html)
+                print(f"TOP20 WWW: {url} -> {len(tracks)} utworow, html_len={hlen} cf={cf}")
+                debug["last_tried"]={"url":url,"status":c["status"],"title":c["title"],"tracks":len(tracks),"html_len":hlen,"cf":cf}
                 if len(tracks)>=1:
-                    final_list=[]
-                    detailed=[]
-                    serca=[]
-                    for no,tytul,tworca,yt,fav,tid in tracks:
-                        base=f"{no}. {tworca} - {tytul}" if tworca else f"{no}. {tytul}"
-                        if yt: base+=f" {yt}"
-                        if fav: base+=f" [{fav}]"
+                    final_list=[]; detailed=[]; serca=[]
+                    for t in tracks:
+                        base=f"{t['no']}. {t['tworca']} - {t['tytul']}" if t["tworca"] else f"{t['no']}. {t['tytul']}"
+                        if t["youtube"]: base+=f" {t['youtube']}"
+                        if t["fav_count"]: base+=f" [{t['fav_count']}]"
                         final_list.append(base.strip())
-                        serca.append(int(fav))
-                        detailed.append({"no":int(no),"tytul":tytul,"tworca":tworca,"youtube":yt,"fav_count":int(fav),"track_id":tid})
+                        serca.append(int(t["fav_count"]))
+                        detailed.append({"no":int(t["no"]),"tytul":t["tytul"],"tworca":t["tworca"],"youtube":t["youtube"],"fav_count":int(t["fav_count"]),"track_id":t["track_id"]})
                     db.collection("lista").document("aktualna").set({
                         "utwory":final_list,"tracks":detailed,"serca":serca,"count":len(final_list),
                         "updated_at":firestore.SERVER_TIMESTAMP,"updated_day":now.strftime("%d.%m.%Y %H:%M:%S"),
-                        "source_url":url,"edycja":url.split("/")[-1],
-                        "typ":"TOP10" if "top-10" in url.lower() else "TOP20",
+                        "source_url":url,"edycja":c["title"],"typ":"TOP10" if "top 10" in c["title"].lower() else "TOP20",
+                        "status":c["status"],
                     })
-                    print(f"ZAPISANO {len(final_list)} z {url}")
+                    print(f"ZAPISANO {len(final_list)} z {url} [{c['title']}]")
+                    debug["saved_from"]=url
                     break
+                else:
+                    debug["errors"].append(f"{url}: 0 utworow, html_len={hlen} cf={cf}")
             except Exception as e:
                 print(f"BLAD {url}: {e}")
+                debug["errors"].append(f"{url}: {e}")
                 continue
+        else:
+            print("TOP20: zadna edycja nie dala utworow, NIE nadpisuje aktualna")
     except Exception as e:
         print(f"ERROR lista {e}")
+        debug["errors"].append(str(e))
         import traceback; traceback.print_exc()
+    finally:
+        try: db.collection("lista").document("_debug").set(debug,merge=True)
+        except: pass
 
 @tasks.loop(seconds=60)
 async def check_glosowanie_link():
@@ -243,4 +338,3 @@ except Exception as e:
     print(f"FATAL {e}")
     import traceback; traceback.print_exc()
     while True: time.sleep(60)
-
