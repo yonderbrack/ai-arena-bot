@@ -1,340 +1,576 @@
-import os, json, base64, hashlib, re, asyncio, threading, time
+import os
+import json
+import base64
+import hashlib
+import re
+import asyncio
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-import 【entity-discord¦canonical_name=discord】
-from 【entity-discord¦canonical_name=discord】.ext import commands, tasks
+
+import discord
+from discord.ext import commands, tasks
+
 import firebase_admin
 from firebase_admin import credentials, firestore
+
 import requests
 from bs4 import BeautifulSoup
 
 PORT = int(os.getenv("PORT", "8000"))
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.send_header("Content-type","text/plain"); self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args): return
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK - AI Arena Bot running")
+    def log_message(self, format, *args):
+        return
+
 def start_health_server():
     try:
-        s=HTTPServer(("0.0.0.0",PORT),HealthHandler)
-        threading.Thread(target=s.serve_forever,daemon=True).start()
-        print(f"HEALTH {PORT}")
-    except Exception as e: print(e)
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=False)
+        t.start()
+        print(f"HEALTH: HTTP server listening on 0.0.0.0:{PORT}")
+    except Exception as e:
+        print(f"HEALTH error: {e}")
 
-b64=os.getenv("FIREBASE_B64")
+b64 = os.getenv("FIREBASE_B64")
 if b64:
-    d=json.loads(base64.b64decode(b64).decode())
-    if not firebase_admin._apps: firebase_admin.initialize_app(credentials.Certificate(d))
+    cred_dict = json.loads(base64.b64decode(b64).decode("utf-8"))
+    cred = credentials.Certificate(cred_dict)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
 else:
-    if not firebase_admin._apps: firebase_admin.initialize_app()
-db=firestore.client()
-intents=【entity-discord¦canonical_name=discord】.Intents.default()
-intents.message_content=True
-intents.members=True
-bot=commands.Bot(command_prefix="!",intents=intents)
-WARSAW=ZoneInfo("Europe/Warsaw")
-TOP20_BASE_URL=os.getenv("TOP20_BASE_URL","https://aiarenatop10.pl")
-TOP20_EDYCJE_URL=f"{TOP20_BASE_URL}/edycje"
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app()
 
-def ensure_users_doc(discord_id,nick):
+db = firestore.client()
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+RECOVERY_TIMEOUT_MINUTES = 10
+RECOVERY_COLLECTION = "pin_recovery"
+RECOVERY_DEBOUNCE_SECONDS = 300
+
+TOP20_BASE_URL = os.getenv("TOP20_BASE_URL", "https://aiarenatop10.pl")
+TOP20_EDYCJE_URL = os.getenv("TOP20_EDYCJE_URL", f"{TOP20_BASE_URL}/edycje")
+TOP20_DEFAULT_URL = os.getenv("TOP20_LISTA_URL", f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-20")
+
+def hash_pin(pin: str) -> str:
+    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
+
+def ensure_users_doc(discord_id: str, nick: str):
     try:
-        ref=db.collection("users").document(str(discord_id))
-        if not ref.get().exists:
-            ref.set({"discordId":str(discord_id),"discord_id":str(discord_id),"nick":nick,"discordName":nick,"createdAt":firestore.SERVER_TIMESTAMP,"lastLoginAt":firestore.SERVER_TIMESTAMP},merge=True)
-    except: pass
+        did = str(discord_id)
+        ref = db.collection("users").document(did)
+        snap = ref.get()
+        if not snap.exists:
+            ref.set({
+                "discordId": did,
+                "discord_id": did,
+                "nick": nick,
+                "discordName": nick,
+                "createdAt": firestore.SERVER_TIMESTAMP,
+                "lastLoginAt": firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+            print(f"USERS: auto-create users/{did} ({nick})")
+            return True
+    except Exception as e:
+        print(f"USERS auto-create error {discord_id}: {e}")
+    return False
 
-def _fetch_sync(url):
+WARSAW = ZoneInfo("Europe/Warsaw")
+
+def get_full_text_from_msg(msg):
+    parts = []
+    if msg.content:
+        parts.append(msg.content)
+    for emb in msg.embeds:
+        if emb.title:
+            parts.append(emb.title)
+        if emb.description:
+            parts.append(emb.description)
+        for f in emb.fields:
+            if f.value:
+                parts.append(f.value)
+    return "\n".join(parts)
+
+def _fetch_sync(url: str) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+    return r.text
+
+def _parse_edycje_for_top20_urls(html: str):
+    urls = []
     try:
-        import cloudscraper
-        scraper=cloudscraper.create_scraper()
-        r=scraper.get(url,timeout=20)
-        r.raise_for_status()
-        return r.text
-    except:
-        headers={"User-Agent":"Mozilla/5.0 Chrome/124.0","Accept-Language":"pl-PL,pl;q=0.9"}
-        r=requests.get(url,headers=headers,timeout=20)
-        r.raise_for_status()
-        return r.text
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/lista/ai-arena-top-20-edycja-" in href:
+                if href.startswith("/"):
+                    href = TOP20_BASE_URL + href
+                m = re.search(r"edycja-(\d+)", href, re.IGNORECASE)
+                if m:
+                    num = int(m.group(1))
+                    urls.append((num, href.split("?")[0].split("#")[0]))
+    except Exception as e:
+        print(f"EDYCJE parse error: {e}")
+    uniq = {}
+    for num, u in urls:
+        if u not in uniq or num > uniq[u]:
+            uniq[u] = num
+    sorted_list = sorted(uniq.items(), key=lambda x: x[1], reverse=True)
+    return [u for u, _ in sorted_list]
 
-def _fetch_sync_debug(url):
-    html=_fetch_sync(url)
-    low=html.lower()
-    is_cf="cf-challenge" in low or "attention required" in low or "just a moment" in low
-    return html, len(html), is_cf
-
-def _parse_edycje_for_top10_urls(html):
-    urls=[]
+def _parse_edycje_for_top10_urls(html: str):
+    urls = []
     try:
-        soup=BeautifulSoup(html,"html.parser")
-        for a in soup.find_all("a",href=True):
-            href=a["href"]
-            if "/lista/" not in href: continue
-            txt=(a.get_text(" ",strip=True)+" "+str(a.get("title",""))).upper()
-            if "top-10" in href.lower() or "TOP 10" in txt:
-                if href.startswith("/"): href=TOP20_BASE_URL+href
-                urls.append(href.split("?")[0].split("#")[0].rstrip("/"))
-    except: pass
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/lista/" not in href:
+                continue
+            text = (a.get_text(" ", strip=True) + " " + str(a.get("title",""))).upper()
+            parent_text = ""
+            if a.parent:
+                parent_text = a.parent.get_text(" ", strip=True).upper()[:400]
+            combined = text + " " + parent_text
+            is_top10_url = "top-10" in href.lower()
+            is_top10_text = "TOP 10" in combined or "TOP-10" in combined or "TOP10" in combined
+            if is_top10_url or ("/lista/ai-arena-top-20-" in href and is_top10_text):
+                if href.startswith("/"):
+                    href = TOP20_BASE_URL + href
+                clean = href.split("?")[0].split("#")[0].rstrip("/")
+                urls.append(clean)
+    except Exception as e:
+        print(f"EDYCJE TOP10 parse error: {e}")
     return list(dict.fromkeys(urls))
 
-def _parse_edycje(html):
-    soup=BeautifulSoup(html,"html.parser")
-    out=[]
-    seen=set()
-    for a in soup.find_all("a",href=True):
-        href=a["href"]
-        if "/lista/" not in href: continue
-        if href.startswith("/"): href=TOP20_BASE_URL+href
-        url=href.split("?")[0].split("#")[0].rstrip("/")
-        if url in seen: continue
-        seen.add(url)
-        card=a
-        for _ in range(4):
-            if card.parent: card=card.parent
-        card_text=card.get_text(" ",strip=True) if card else ""
-        title=""
-        h=card.find(["h2","h3","h4"]) if card else None
-        if h: title=h.get_text(" ",strip=True)
-        if not title: title=a.get_text(" ",strip=True) or url.split("/")[-1]
-        low=card_text.lower()
-        if "głosowanie trwa" in low or "trwa głosowanie" in low:
-            status="voting"
-        elif "zamknięta" in low or "zamknięty" in low:
-            status="closed"
-        elif "start" in low or "poczekalnia" in low or "zgłoszenia" in low:
-            status="upcoming"
-        else:
-            status="unknown"
-        out.append({"url":url,"title":title,"status":status,"card":card_text[:300]})
-    return out
-
-def _extract_tracks_from_html(html):
-    tracks=[]
+def _extract_tracks_from_html(html: str):
+    tracks = []
     try:
-        soup=BeautifulSoup(html,"html.parser")
-        articles=soup.find_all("article",class_=lambda c:c and "track" in c)
-        if not articles: articles=soup.find_all("article",id=lambda x:x and x.startswith("u-t_"))
-        for idx,art in enumerate(articles):
-            tytul=art.get("data-tytul") or art.get("data-title") or ""
-            tworca=art.get("data-tworca") or art.get("data-artist") or ""
-            if not tytul: continue
-            no_el=art.find("span",class_=lambda c:c and "track-no" in c)
-            try: no=int(no_el.get_text(strip=True)) if no_el else idx+1
-            except: no=idx+1
-            track_id=art.get("id") or ""
-            if track_id.startswith("u-"): track_id=track_id[2:]
-            yt=""
-            for a in art.find_all("a",href=True):
-                if "youtu.be" in a["href"] or "youtube.com" in a["href"]:
-                    yt=a["href"].strip(); break
-            fav=0
-            fav_el=art.select_one("span.fav-count, .fav-count")
-            if fav_el:
-                m=re.search(r"\d+",fav_el.get_text(" ",strip=True))
-                if m: fav=int(m.group())
-            tracks.append((no,tytul.strip(),tworca.strip(),yt,fav,track_id.strip()))
-    except Exception as e:
-        print(f"EXTRACT error {e}")
-    tracks.sort(key=lambda x:x[0])
-    return tracks
-
-def _to_int(v):
-    try: return int(v or 0)
-    except: return 0
-
-def _unescape(s):
-    try: return json.loads(f'"{s}"')
-    except: return s
-
-def _tracks_from_json_obj(obj,out):
-    if isinstance(obj,dict):
-        keys={str(k).lower():k for k in obj.keys()}
-        tytul_k=next((keys[k] for k in keys if k in ("tytul","tytuł","title","nazwa","name")),None)
-        tworca_k=next((keys[k] for k in keys if k in ("tworca","twórca","artist","autor","wykonawca","creator")),None)
-        if tytul_k and obj.get(tytul_k):
-            out.append({"tytul":str(obj.get(tytul_k,"")).strip(),"tworca":str(obj.get(tworca_k,"")).strip() if tworca_k else "","youtube":str(obj.get("youtube",obj.get("yt",obj.get("youtube_url",""))) or "").strip(),"fav_count":_to_int(obj.get("fav_count",obj.get("favs",obj.get("serca",0)))),"track_id":str(obj.get("track_id",obj.get("id","")) or "").strip(),"no":_to_int(obj.get("no",obj.get("position",obj.get("miejsce",0))))})
-            return
-        for v in obj.values(): _tracks_from_json_obj(v,out)
-    elif isinstance(obj,list):
-        for v in obj: _tracks_from_json_obj(v,out)
-
-def _extract_tracks_v2(html):
-    tracks=[]
-    soup=BeautifulSoup(html,"html.parser")
-    script=soup.find("script",id="__NEXT_DATA__")
-    if script and script.string:
-        try: _tracks_from_json_obj(json.loads(script.string),tracks)
-        except Exception as e: print(f"PARSE NEXT_DATA blad: {e}")
-    if not tracks:
-        for m in re.finditer(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',html,re.S):
-            chunk=m.group(1)
+        soup = BeautifulSoup(html, "html.parser")
+        articles = soup.find_all("article", class_=lambda c: c and "track" in c)
+        if not articles:
+            articles = soup.find_all("article", id=lambda x: x and x.startswith("u-t_"))
+        for idx, art in enumerate(articles):
+            tytul = art.get("data-tytul") or art.get("data-title") or ""
+            tworca = art.get("data-tworca") or art.get("data-artist") or ""
+            if not tytul:
+                continue
+            no_el = art.find("span", class_=lambda c: c and "track-no" in c)
             try:
-                decoded=json.loads(f'"{chunk}"')
-                if decoded.strip().startswith(("{","[")):
-                    _tracks_from_json_obj(json.loads(decoded),tracks)
-            except: pass
-    if not tracks:
-        pairs=re.findall(r'"tytul"\s*:\s*"((?:\\.|[^"\\])*)".{0,400}?"tworca"\s*:\s*"((?:\\.|[^"\\])*)"',html)
-        pairs+= [(b,a) for a,b in re.findall(r'"tworca"\s*:\s*"((?:\\.|[^"\\])*)".{0,400}?"tytul"\s*:\s*"((?:\\.|[^"\\])*)"',html)]
-        for tytul,tworca in pairs:
-            tracks.append({"tytul":_unescape(tytul),"tworca":_unescape(tworca),"youtube":"","fav_count":0,"track_id":"","no":0})
-    if not tracks:
-        old=_extract_tracks_from_html(html)
-        for no,tytul,tworca,yt,fav,tid in old:
-            tracks.append({"no":no,"tytul":tytul,"tworca":tworca,"youtube":yt,"fav_count":fav,"track_id":tid})
-    seen=set(); clean=[]
-    for i,t in enumerate(tracks,1):
-        key=(t["tworca"].lower(),t["tytul"].lower())
-        if key in seen or not t["tytul"]: continue
-        seen.add(key)
-        if not t.get("no"): t["no"]=i
-        clean.append(t)
-    clean.sort(key=lambda x:x["no"])
-    return clean
+                no = int(no_el.get_text(strip=True)) if no_el else idx + 1
+            except:
+                no = idx + 1
+            track_id = ""
+            raw_id = art.get("id") or ""
+            if raw_id:
+                track_id = raw_id[2:] if raw_id.startswith("u-") else raw_id
+            if not track_id:
+                btn = art.find("button", class_=lambda c: c and "fav" in c)
+                if btn:
+                    track_id = btn.get("data-track") or btn.get("value") or ""
+            youtube_url = ""
+            for a in art.find_all("a", href=True):
+                href = a["href"]
+                if "youtu.be" in href or "youtube.com" in href:
+                    youtube_url = href.strip()
+                    break
+            if not youtube_url:
+                for ifr in art.find_all("iframe", src=True):
+                    src = ifr["src"]
+                    if "youtube" in src or "youtu.be" in src:
+                        youtube_url = src.strip()
+                        break
+            if not youtube_url:
+                inner = str(art)
+                m = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', inner)
+                if m:
+                    youtube_url = m.group(0).rstrip("\"'")
+            fav_count = None
+            heart_terms = ("fav", "heart", "serc", "like", "love")
+            count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
+            for el in [art] + art.find_all(True):
+                if fav_count is not None:
+                    break
+                attrs = el.attrs or {}
+                classes = attrs.get("class", [])
+                if isinstance(classes, str):
+                    classes = classes.split()
+                ident = " ".join([str(attrs.get("id", "")), *[str(c) for c in classes]]).lower()
+                relevant = any(term in ident for term in heart_terms)
+                for attr in count_attrs:
+                    val = attrs.get(attr)
+                    if val is not None and (relevant or attr != "data-count"):
+                        mm = re.search(r"\d+", str(val))
+                        if mm:
+                            fav_count = int(mm.group())
+                            break
+            if fav_count is None:
+                for el in art.find_all(True):
+                    attrs = el.attrs or {}
+                    classes = attrs.get("class", [])
+                    if isinstance(classes, str):
+                        classes = classes.split()
+                    ident = " ".join([str(attrs.get("id", "")), *[str(c) for c in classes]]).lower()
+                    if not any(term in ident for term in heart_terms):
+                        continue
+                    txt = el.get_text(" ", strip=True)
+                    mm = re.search(r"\d+", txt)
+                    if mm:
+                        fav_count = int(mm.group())
+                        break
+            if fav_count is None:
+                fav_el = art.select_one("span.fav-count, .fav-count")
+                if fav_el is not None:
+                    fav_text = fav_el.get_text(" ", strip=True)
+                    mm = re.search(r"\d+", fav_text)
+                    if mm:
+                        fav_count = int(mm.group())
+            if fav_count is None:
+                article_text = art.get_text(" ", strip=True)
+                mm = re.search(r"[♥❤♡]\s*(\d+)", article_text)
+                if mm:
+                    fav_count = int(mm.group(1))
+            if fav_count is None:
+                raw_article = str(art)
+                mm = re.search(r'class=["\'][^"\']*\bfav-count\b[^"\']*["\'][^>]*>\s*(\d+)\s*<', raw_article, re.IGNORECASE)
+                if mm:
+                    fav_count = int(mm.group(1))
+            if fav_count is None:
+                fav_count = 0
+            tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip(), fav_count, track_id.strip()))
+    except Exception as e:
+        print(f"EXTRACT BS4 error: {e}")
+    if len(tracks) < 3:
+        try:
+            art_blocks = re.findall(r'<article[^>]+id="([^"]+)"[^>]*data-tytul="([^"]+)"[^>]*data-tworca="([^"]+)"[^>]*>(.*?)</article>', html, re.DOTALL | re.IGNORECASE)
+            if art_blocks:
+                tracks = []
+                for i, (art_id, tytul, tworca, inner) in enumerate(art_blocks):
+                    youtube_url = ""
+                    m = re.search(r'https?://(?:www\.)?(?:youtu\.be/[^\s"<>]+|youtube\.com/watch\?v=[^\s"<>]+)', inner)
+                    if m:
+                        youtube_url = m.group(0)
+                    m_no = re.search(r'class="[^"]*track-no[^"]*"[^>]*>(\d+)<', inner)
+                    no = int(m_no.group(1)) if m_no else i + 1
+                    m_fav = re.search(r'class="[^"]*fav-count[^"]*"[^>]*>(\d+)<', inner)
+                    fav_count = int(m_fav.group(1)) if m_fav else 0
+                    track_id = art_id[2:] if art_id.startswith("u-") else art_id
+                    tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip(), fav_count, track_id.strip()))
+        except Exception as e:
+            print(f"EXTRACT REGEX error: {e}")
+    try:
+        tracks.sort(key=lambda x: x[0])
+    except:
+        pass
+    return tracks
 
 @tasks.loop(seconds=60)
 async def check_lista():
-    now=datetime.now(WARSAW)
-    debug={"last_run":now.strftime("%d.%m.%Y %H:%M:%S"),"candidates":[],"errors":[]}
+    now = datetime.now(WARSAW)
     try:
-        html_edycje,ln,is_cf=await asyncio.to_thread(_fetch_sync_debug,TOP20_EDYCJE_URL)
-        print(f"EDYCJE: len={ln} cf={is_cf}")
-        candidates=_parse_edycje(html_edycje)
-        print(f"EDYCJE: znaleziono {len(candidates)} linkow /lista/: {[(c['status'],c['title']) for c in candidates]}")
-        debug["candidates"]=candidates
-        ordered=[c for c in candidates if c["status"]=="voting"]+[c for c in candidates if c["status"]=="closed"]+[c for c in candidates if c["status"] in ("unknown",)]
-        for c in ordered:
-            url=c["url"]
-            try:
-                print(f"TOP20 WWW: probuje {c['status']} {c['title']} {url}")
-                html,hlen,cf=await asyncio.to_thread(_fetch_sync_debug,url)
-                tracks=_extract_tracks_v2(html)
-                print(f"TOP20 WWW: {url} -> {len(tracks)} utworow, html_len={hlen} cf={cf}")
-                debug["last_tried"]={"url":url,"status":c["status"],"title":c["title"],"tracks":len(tracks),"html_len":hlen,"cf":cf}
-                if len(tracks)>=1:
-                    final_list=[]; detailed=[]; serca=[]
-                    for t in tracks:
-                        base=f"{t['no']}. {t['tworca']} - {t['tytul']}" if t["tworca"] else f"{t['no']}. {t['tytul']}"
-                        if t["youtube"]: base+=f" {t['youtube']}"
-                        if t["fav_count"]: base+=f" [{t['fav_count']}]"
-                        final_list.append(base.strip())
-                        serca.append(int(t["fav_count"]))
-                        detailed.append({"no":int(t["no"]),"tytul":t["tytul"],"tworca":t["tworca"],"youtube":t["youtube"],"fav_count":int(t["fav_count"]),"track_id":t["track_id"]})
-                    db.collection("lista").document("aktualna").set({
-                        "utwory":final_list,"tracks":detailed,"serca":serca,"count":len(final_list),
-                        "updated_at":firestore.SERVER_TIMESTAMP,"updated_day":now.strftime("%d.%m.%Y %H:%M:%S"),
-                        "source_url":url,"edycja":c["title"],"typ":"TOP10" if "top 10" in c["title"].lower() else "TOP20",
-                        "status":c["status"],
-                    })
-                    print(f"ZAPISANO {len(final_list)} z {url} [{c['title']}]")
-                    debug["saved_from"]=url
-                    break
-                else:
-                    debug["errors"].append(f"{url}: 0 utworow, html_len={hlen} cf={cf}")
-            except Exception as e:
-                print(f"BLAD {url}: {e}")
-                debug["errors"].append(f"{url}: {e}")
-                continue
+        candidate_urls_top20 = []
+        candidate_urls_top10 = []
+        try:
+            edycje_html = await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
+            candidate_urls_top20 = _parse_edycje_for_top20_urls(edycje_html)
+            candidate_urls_top10 = _parse_edycje_for_top10_urls(edycje_html)
+            print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych")
+        except Exception as e:
+            print(f"TOP20 WWW: blad pobierania /edycje: {e}")
+        candidate_urls = []
+        candidate_urls.extend(candidate_urls_top20)
+        candidate_urls.extend(candidate_urls_top10)
+        if not candidate_urls:
+            for n in range(35, 0, -1):
+                candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
         else:
-            print("TOP20: zadna edycja nie dala utworow, NIE nadpisuje aktualna")
+            existing_nums = set()
+            for u in candidate_urls:
+                m = re.search(r"edycja-(\d+)", u)
+                if m:
+                    existing_nums.add(int(m.group(1)))
+            for n in range(35, 0, -1):
+                if n not in existing_nums:
+                    candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
+            candidate_urls = list(dict.fromkeys(candidate_urls))
+        final_tracks = []
+        used_url = None
+        for url in candidate_urls:
+            try:
+                print(f"TOP20 WWW: probuje {url}")
+                html = await asyncio.to_thread(_fetch_sync, url)
+                tracks = _extract_tracks_from_html(html)
+                print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
+                if len(tracks) >= 1:
+                    final_tracks = tracks
+                    used_url = url
+                    break
+            except Exception as e:
+                print(f"TOP20 WWW: blad {url}: {e}")
+                continue
+        if not final_tracks:
+            return
+        final_list = []
+        detailed_tracks = []
+        serca = []
+        for item in final_tracks:
+            if len(item) == 6:
+                no, tytul, tworca, yt, fav, tid = item
+            else:
+                no, tytul, tworca, yt = item
+                fav = 0
+                tid = ""
+            base = f"{no}. {tworca} - {tytul}" if tworca else f"{no}. {tytul}"
+            if yt:
+                base = f"{base} {yt}"
+            if fav:
+                base = f"{base} [{fav}]"
+            final_list.append(base.strip())
+            serca.append(int(fav))
+            detailed_tracks.append({
+                "no": int(no),
+                "tytul": tytul,
+                "tworca": tworca,
+                "youtube": yt,
+                "fav_count": int(fav),
+                "track_id": tid,
+            })
+        lista_ref = db.collection("lista").document("aktualna")
+        lista_ref.set({
+            "utwory": final_list,
+            "tracks": detailed_tracks,
+            "serca": serca,
+            "count": len(final_list),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "updated_day": now.strftime("%d.%m.%Y %H:%M:%S"),
+            "source_url": used_url,
+            "edycja": used_url.split("/")[-1] if used_url else "unknown",
+            "typ": "TOP10" if "top-10" in (used_url or "").lower() else "TOP20",
+        })
+        print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url}")
     except Exception as e:
-        print(f"ERROR lista {e}")
-        debug["errors"].append(str(e))
-        import traceback; traceback.print_exc()
-    finally:
-        try: db.collection("lista").document("_debug").set(debug,merge=True)
-        except: pass
+        print(f"ERROR lista WWW: {e}")
+        import traceback
+        traceback.print_exc()
 
 @tasks.loop(seconds=60)
 async def check_glosowanie_link():
     try:
-        cid=int(os.getenv("GLOSOWANIE_CHANNEL_ID") or "1517609248765382776")
-        ch=bot.get_channel(cid) or await bot.fetch_channel(cid)
-        if not ch: return
-        pat=re.compile(r"https?://(?:forms\.gle|docs\.google\.com/(?:forms|spreadsheets)/|forms\.google\.com|forms\.office\.com|docs\.google\.com/forms)/[^\s\)\]\<\>\"']+",re.I)
+        cid_raw = os.getenv("GLOSOWANIE_CHANNEL_ID") or os.getenv("LINKI_CHANNEL_ID") or "1517609248765382776"
+        try:
+            cid = int(cid_raw)
+        except:
+            return
+        try:
+            ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        except:
+            return
+        if ch is None:
+            return
+        link_pattern = re.compile(r"https?://(?:forms\.gle|docs\.google\.com/(?:forms|spreadsheets)/|forms\.google\.com|forms\.office\.com|docs\.google\.com/forms)/[^\s\)\]\<\>\"']+", re.IGNORECASE)
+        found_link = None
+        found_msg_id = None
         async for msg in ch.history(limit=20):
-            m=pat.search(msg.content or "")
+            if not msg.content:
+                continue
+            m = link_pattern.search(msg.content)
             if m:
-                found=m.group(0).rstrip(").,!;")
-                ref=db.collection("config").document("glosowanie")
-                cur=ref.get().to_dict().get("glosuj_link","") if ref.get().exists else ""
-                if cur!=found:
-                    ref.set({"glosuj_link":found,"source_message_id":str(msg.id),"updated_at":firestore.SERVER_TIMESTAMP},merge=True)
+                found_link = m.group(0).rstrip(").,!;")
+                found_msg_id = str(msg.id)
                 break
-    except: pass
+        if not found_link:
+            return
+        doc_ref = db.collection("config").document("glosowanie")
+        current_doc = doc_ref.get()
+        current_link = ""
+        if current_doc.exists:
+            current_link = current_doc.to_dict().get("glosuj_link", "") or ""
+        if current_link == found_link:
+            return
+        doc_ref.set({
+            "glosuj_link": found_link,
+            "source_message_id": found_msg_id,
+            "source_channel_id": str(cid),
+            "updated_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+    except Exception as e:
+        print(f"ERROR glosowanie_link: {e}")
+
+TYPY_SYSTEM_DOC = "_system_weekly_cleanup"
 
 def get_current_week_start():
-    now=datetime.now(WARSAW)
-    return (now - timedelta(days=now.weekday())).replace(hour=0,minute=0,second=0,microsecond=0)
-def cleanup_old_typy(cutoff):
+    now = datetime.now(WARSAW)
+    monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return monday
+
+def cleanup_old_typy(cutoff_datetime):
     try:
-        cutoff_ms=int(cutoff.timestamp()*1000)
-        batch=db.batch(); cnt=0; deleted=0
-        for doc in db.collection("typy").stream():
-            if doc.id=="_system_weekly_cleanup": continue
-            ts=(doc.to_dict() or {}).get("timestamp")
-            if ts and int(ts)<cutoff_ms:
-                batch.delete(doc.reference); cnt+=1; deleted+=1
-                if cnt>=400: batch.commit(); batch=db.batch(); cnt=0
-        if cnt>0: batch.commit()
-        return deleted
-    except: return 0
+        collection = db.collection("typy")
+        cutoff_ms = int(cutoff_datetime.timestamp() * 1000)
+        docs = list(collection.stream())
+        deleted_count = 0
+        batch = db.batch()
+        batch_count = 0
+        for doc in docs:
+            if doc.id == TYPY_SYSTEM_DOC:
+                continue
+            data = doc.to_dict() or {}
+            timestamp = data.get("timestamp")
+            if timestamp is None:
+                continue
+            try:
+                timestamp_ms = int(timestamp)
+            except:
+                continue
+            if timestamp_ms < cutoff_ms:
+                batch.delete(doc.reference)
+                batch_count += 1
+                deleted_count += 1
+                if batch_count >= 400:
+                    batch.commit()
+                    batch = db.batch()
+                    batch_count = 0
+        if batch_count > 0:
+            batch.commit()
+        print(f"TYPY: czyszczenie zakończone. Usunięto: {deleted_count}")
+        return deleted_count
+    except Exception as e:
+        print(f"ERROR TYPY cleanup: {e}")
+        return 0
 
 @tasks.loop(seconds=30)
 async def check_typy_cleanup():
     try:
-        now=datetime.now(WARSAW)
-        week_start=get_current_week_start()
-        week_key=week_start.strftime("%Y-%m-%d")
-        ref=db.collection("typy").document("_system_weekly_cleanup")
-        snap=ref.get()
-        data=snap.to_dict() or {} if snap.exists else {}
-        if not data.get("initialized"):
-            ref.set({"initialized":True,"cleanup_week":week_key,"last_cleanup_at":firestore.SERVER_TIMESTAMP},merge=True)
+        now = datetime.now(WARSAW)
+        current_week_start = get_current_week_start()
+        current_week_key = current_week_start.strftime("%Y-%m-%d")
+        system_ref = db.collection("typy").document(TYPY_SYSTEM_DOC)
+        system_doc = system_ref.get()
+        system_data = {}
+        if system_doc.exists:
+            system_data = system_doc.to_dict() or {}
+        initialized = bool(system_data.get("initialized"))
+        cleanup_week = system_data.get("cleanup_week")
+        if not initialized:
+            deleted_count = cleanup_old_typy(current_week_start)
+            system_ref.set({
+                "initialized": True,
+                "cleanup_week": current_week_key,
+                "last_cleanup_at": firestore.SERVER_TIMESTAMP,
+                "last_deleted_count": deleted_count
+            }, merge=True)
             return
-        if now.weekday()!=0 or now.hour<12 or data.get("cleanup_week")==week_key: return
-        d=cleanup_old_typy(week_start)
-        ref.set({"cleanup_week":week_key,"last_cleanup_at":firestore.SERVER_TIMESTAMP,"last_deleted_count":d},merge=True)
-    except: pass
+        if now.weekday() != 0 or now.hour < 12 or cleanup_week == current_week_key:
+            return
+        deleted_count = cleanup_old_typy(current_week_start)
+        system_ref.set({
+            "cleanup_week": current_week_key,
+            "last_cleanup_at": firestore.SERVER_TIMESTAMP,
+            "last_deleted_count": deleted_count
+        }, merge=True)
+    except Exception as e:
+        print(f"ERROR typy cleanup: {e}")
 
 async def sync_members():
     try:
-        guild=bot.get_guild(int(os.getenv("GUILD_ID") or "1515466354113777715"))
-        if not guild: return
-        batch=db.batch(); cnt=0
+        guild_id = int(os.getenv("GUILD_ID") or "1515466354113777715")
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            return
+        members = []
         async for member in guild.fetch_members(limit=None):
-            if member.bot: continue
-            batch.set(db.collection("czlonkowie").document(str(member.id)),{"discord_id":str(member.id),"username":member.name,"display_name":member.display_name,"avatar":str(member.display_avatar.url) if member.display_avatar else ""},merge=True)
-            ensure_users_doc(str(member.id),member.display_name)
-            cnt+=1
-            if cnt>=400: batch.commit(); batch=db.batch(); cnt=0
-        if cnt>0: batch.commit()
-    except Exception as e: print(f"ERROR czlonkowie {e}")
+            members.append(member)
+        collection = db.collection("czlonkowie")
+        batch = db.batch()
+        batch_count = 0
+        for member in members:
+            if member.bot:
+                continue
+            doc_ref = collection.document(str(member.id))
+            batch.set(doc_ref, {
+                "discord_id": str(member.id),
+                "username": member.name,
+                "display_name": member.display_name,
+                "avatar": str(member.display_avatar.url) if member.display_avatar else "",
+            }, merge=True)
+            ensure_users_doc(str(member.id), member.display_name)
+            batch_count += 1
+            if batch_count >= 400:
+                batch.commit()
+                batch = db.batch()
+                batch_count = 0
+        if batch_count > 0:
+            batch.commit()
+    except Exception as e:
+        print(f"ERROR czlonkowie: {e}")
 
 @tasks.loop(hours=6)
-async def sync_members_loop(): await sync_members()
+async def sync_members_loop():
+    await sync_members()
+
 @bot.event
 async def on_member_join(member):
-    if member.bot: return
-    db.collection("czlonkowie").document(str(member.id)).set({"discord_id":str(member.id),"username":member.name,"display_name":member.display_name,"active":True},merge=True)
-    ensure_users_doc(str(member.id),member.display_name)
+    try:
+        if member.bot:
+            return
+        db.collection("czlonkowie").document(str(member.id)).set({
+            "discord_id": str(member.id),
+            "username": member.name,
+            "display_name": member.display_name,
+            "avatar": str(member.display_avatar.url) if member.display_avatar else "",
+            "active": True,
+        }, merge=True)
+        ensure_users_doc(str(member.id), member.display_name)
+    except Exception as e:
+        print(f"ERROR on_member_join: {e}")
+
 @bot.event
 async def on_ready():
     print(f"READY {bot.user}")
-    if not check_lista.is_running(): check_lista.start()
-    if not check_glosowanie_link.is_running(): check_glosowanie_link.start()
-    if not check_typy_cleanup.is_running(): check_typy_cleanup.start()
-    if not sync_members_loop.is_running(): sync_members_loop.start()
+    if not check_lista.is_running():
+        check_lista.start()
+    if not check_glosowanie_link.is_running():
+        check_glosowanie_link.start()
+    if not check_typy_cleanup.is_running():
+        check_typy_cleanup.start()
+    if not sync_members_loop.is_running():
+        sync_members_loop.start()
     await sync_members()
 
 start_health_server()
-_token=(os.getenv("DISCORD_TOKEN") or "").strip().strip('"').strip("'")
+
+_raw_token = os.getenv("DISCORD_TOKEN") or ""
+_token = _raw_token.strip().strip('"').strip("'").strip()
 if not _token:
-    print("FATAL DISCORD_TOKEN pusty")
-    while True: time.sleep(60)
+    print("FATAL: DISCORD_TOKEN pusty - ustaw w Hostless Environment variables")
+    while True:
+        time.sleep(60)
+
 print(f"DEBUG TOKEN len={len(_token)} kropki={_token.count('.')}")
-try: bot.run(_token)
+
+try:
+    bot.run(_token)
 except Exception as e:
-    print(f"FATAL {e}")
-    import traceback; traceback.print_exc()
-    while True: time.sleep(60)
+    print(f"FATAL LoginFailure: {e}")
+    import traceback
+    traceback.print_exc()
+    while True:
+        time.sleep(60)
+
