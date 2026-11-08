@@ -110,9 +110,22 @@ def _fetch_sync(url: str) -> str:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
     }
-    r = requests.get(url, headers=headers, timeout=20)
-    r.raise_for_status()
-    return r.text
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper()
+        r = scraper.get(url, timeout=20)
+        if r.status_code == 404:
+            return ""
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        if "404" in str(e):
+            return ""
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code == 404:
+            return ""
+        r.raise_for_status()
+        return r.text
 
 def _parse_edycje_for_top20_urls(html: str):
     urls = []
@@ -281,6 +294,51 @@ def _extract_tracks_from_html(html: str):
         pass
     return tracks
 
+# === WYNIKI LIVE: kopia pierwszych 5 z listy w kolejnosci listy (1-5) ===
+_last_edycja_for_wyniki = None
+
+async def sync_wyniki_live():
+    global _last_edycja_for_wyniki
+    try:
+        doc = db.collection("lista").document("aktualna").get()
+        if not doc.exists:
+            return
+        data = doc.to_dict() or {}
+        tracks = data.get("tracks") or []
+        if not tracks:
+            return
+        edycja = data.get("edycja", "")
+        source_url = data.get("source_url", "")
+        top5 = sorted(tracks, key=lambda x: x.get("no", 999))[:5]
+        if _last_edycja_for_wyniki != edycja:
+            print(f"WYNIKI: nowa edycja {edycja} - przepisuje Wyniki live")
+            _last_edycja_for_wyniki = edycja
+        for i, tr in enumerate(top5, start=1):
+            wynik = f"{i}. {tr.get('tworca','')} - {tr.get('tytul','')}"
+            full = f"{i}. {tr.get('tworca','')} - {tr.get('tytul','')} {tr.get('youtube','')}"
+            db.collection("Wyniki").document(str(i)).set({
+                "wynik": wynik,
+                "wynik_full": full,
+                "pelny": full,
+                "tworca": tr.get("tworca", ""),
+                "tytul": tr.get("tytul", ""),
+                "youtube": tr.get("youtube", ""),
+                "youtubeUrl": tr.get("youtube", ""),
+                "serca": int(tr.get("fav_count", 0)),
+                "track_id": tr.get("track_id", ""),
+                "source": "live_top5_z_listy",
+                "source_url": source_url,
+                "edycja": edycja,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+                "updated_day": datetime.now(WARSAW).strftime("%d.%m.%Y %H:%M:%S"),
+            }, merge=True)
+    except Exception as e:
+        print(f"WYNIKI blad: {e}")
+
+@tasks.loop(seconds=30)
+async def check_wyniki_loop():
+    await sync_wyniki_live()
+
 @tasks.loop(seconds=60)
 async def check_lista():
     now = datetime.now(WARSAW)
@@ -294,28 +352,20 @@ async def check_lista():
             print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
+        # FIX: TOP20 brute 25..1 NAJPIERW, potem TOP10
         candidate_urls = []
-        candidate_urls.extend(candidate_urls_top20)
+        for n in range(25, 0, -1):
+            candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
         candidate_urls.extend(candidate_urls_top10)
-        if not candidate_urls:
-            for n in range(35, 0, -1):
-                candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
-        else:
-            existing_nums = set()
-            for u in candidate_urls:
-                m = re.search(r"edycja-(\d+)", u)
-                if m:
-                    existing_nums.add(int(m.group(1)))
-            for n in range(35, 0, -1):
-                if n not in existing_nums:
-                    candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
-            candidate_urls = list(dict.fromkeys(candidate_urls))
+        candidate_urls = list(dict.fromkeys(candidate_urls))
         final_tracks = []
         used_url = None
         for url in candidate_urls:
             try:
                 print(f"TOP20 WWW: probuje {url}")
                 html = await asyncio.to_thread(_fetch_sync, url)
+                if not html:
+                    continue
                 tracks = _extract_tracks_from_html(html)
                 print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
                 if len(tracks) >= 1:
@@ -365,6 +415,7 @@ async def check_lista():
             "typ": "TOP10" if "top-10" in (used_url or "").lower() else "TOP20",
         })
         print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url}")
+        await sync_wyniki_live()
     except Exception as e:
         print(f"ERROR lista WWW: {e}")
         import traceback
@@ -546,6 +597,8 @@ async def on_ready():
     print(f"READY {bot.user}")
     if not check_lista.is_running():
         check_lista.start()
+    if not check_wyniki_loop.is_running():
+        check_wyniki_loop.start()
     if not check_glosowanie_link.is_running():
         check_glosowanie_link.start()
     if not check_typy_cleanup.is_running():
