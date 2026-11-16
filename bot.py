@@ -383,13 +383,6 @@ async def check_lista():
                 html = await asyncio.to_thread(_fetch_sync, url)
                 if not html:
                     continue
-                # TYLKO ZAMKNIETA - tylko naglowek strony, nie cala strona
-                # 24 ma slowo 'zamkni' w stopce / liscie innych edycji, wiec stary check na calym HTML przepuszczal 24
-                # Naglowek 23 ma badge ZAMKNIETA i 'Ranking zamkniety', 24 otwarta ma OTWARTA / GLOSOWANIE
-                header = html[:8000].lower()
-                if "zamkni" not in header and "ranking zamknięty" not in header:
-                    print(f"TOP20 WWW: pomijam {url} - nie zamknieta (naglowek bez ZAMKNIETA)")
-                    continue
                 tracks = _extract_tracks_from_html(html)
                 print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
                 if len(tracks) >= 1:
@@ -616,80 +609,235 @@ async def on_member_join(member):
     except Exception as e:
         print(f"ERROR on_member_join: {e}")
 
-# === HALL OF FAME: poniedzialek 00:00-23:00, lista/aktualna, numer 1 ===
+# === HALL OF FAME: zamiana WSZYSTKICH danych, niedziela 23:30 ===
+# Zasada:
+# - Zrodlo: /edycje + /edycje?strona=2 + /edycje?strona=3, tylko div#listaEdycji, tylko a.edition-foto
+# - Kolejnosc na stronie = od najnowszej. Bot odwraca ja i nadaje numerNotowania = 1..N po kolei.
+#   Dzieki temu edycja specjalna dostaje wlasny calkowity numer (bez 21.5), a telefon widzi wszystkie.
+# - numerNotowania zapisywane jako LICZBA (int), nie string - tego wymaga orderBy w telefonie.
+# - Przy starcie bot raz przebudowuje wszystko (zamiana teraz). Potem tylko niedziela 23:30-23:59.
 def _hof_youtube_id(url: str) -> str:
     if not url:
         return ""
     m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{6,})", url)
     return m.group(1) if m else ""
 
-@tasks.loop(seconds=30)
+def _hof_fetch_closed_edition_urls_sync():
+    # Zwraca liste (url, tytul) w kolejnosci ze strony: najnowsza pierwsza.
+    out = []
+    seen = set()
+    page_urls = [
+        TOP20_EDYCJE_URL,
+        f"{TOP20_EDYCJE_URL}?strona=2",
+        f"{TOP20_EDYCJE_URL}?strona=3",
+    ]
+    for page_url in page_urls:
+        try:
+            html = _fetch_sync(page_url)
+        except Exception as e:
+            print(f"HALL OF FAME: blad pobrania {page_url}: {e}")
+            continue
+        if not html:
+            continue
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            lista = soup.find("div", id="listaEdycji")
+            container = lista if lista is not None else soup
+            links = container.find_all("a", class_=lambda c: c and "edition-foto" in c, href=True)
+            if not links:
+                # Fallback: wszystkie linki /lista/ w sekcji Zamkniete
+                links = container.find_all("a", href=True)
+            for a in links:
+                href = a.get("href") or ""
+                if "/lista/" not in href:
+                    continue
+                if href.startswith("/"):
+                    full = TOP20_BASE_URL + href
+                elif href.startswith("http"):
+                    full = href
+                else:
+                    full = TOP20_BASE_URL + "/" + href.lstrip("/")
+                clean = full.split("?")[0].split("#")[0].rstrip("/")
+                if clean in seen:
+                    continue
+                seen.add(clean)
+                # Tytul z article/h3 obok linku - do wykrycia edycji specjalnej
+                title = ""
+                try:
+                    art = a.find_parent("article")
+                    if art is not None:
+                        h3 = art.find("h3")
+                        if h3 is not None:
+                            title = h3.get_text(" ", strip=True)
+                except Exception:
+                    title = ""
+                out.append((clean, title))
+        except Exception as e:
+            print(f"HALL OF FAME: blad parsowania {page_url}: {e}")
+            continue
+    print(f"HALL OF FAME: znaleziono {len(out)} linkow edycji z /edycje 1-3")
+    return out
+
+def _hof_is_closed_html(html: str) -> bool:
+    if not html:
+        return False
+    header = html[:8000].lower()
+    return "zamkni" in header
+
+_hof_last_sunday_run = ""
+_hof_initial_done = False
+
+async def _hof_rebuild_all():
+    # Pobiera wszystkie zamkniete edycje, bierze #1 z kazdej, kasuje cala kolekcje i zapisuje od nowa.
+    # Zwraca True gdy cos zmieniono, False gdy bez zmian.
+    try:
+        edition_links = await asyncio.to_thread(_hof_fetch_closed_edition_urls_sync)
+        if not edition_links:
+            print("HALL OF FAME: brak linkow edycji - nic nie zmieniam")
+            return False
+        # Najstarsza pierwsza -> numerNotowania 1..N po kolei
+        chronological = list(reversed(edition_links))
+        collected = []  # (seq, url, title, tworca, tytul, youtube_url)
+        for seq, (url, title) in enumerate(chronological, start=1):
+            try:
+                html = await asyncio.to_thread(_fetch_sync, url)
+                if not html:
+                    print(f"HALL OF FAME: pusta strona {url} - pomijam")
+                    continue
+                if not _hof_is_closed_html(html):
+                    print(f"HALL OF FAME: pomijam {url} - nie zamknieta")
+                    continue
+                tracks = _extract_tracks_from_html(html)
+                if not tracks:
+                    print(f"HALL OF FAME: brak utworow {url} - pomijam")
+                    continue
+                top = None
+                for t in tracks:
+                    # _extract zwraca tuple (no, tytul, tworca, yt, fav, tid)
+                    if t[0] == 1:
+                        top = t
+                        break
+                if top is None:
+                    top = tracks[0]
+                no, tytul, tworca, yt, fav, tid = top if len(top) == 6 else (top[0], top[1], top[2], top[3], 0, "")
+                tworca = (tworca or "").strip()
+                tytul = (tytul or "").strip()
+                if not tworca or not tytul:
+                    print(f"HALL OF FAME: puste #1 {url} - pomijam")
+                    continue
+                collected.append((seq, url, title, tworca, tytul, (yt or "").strip()))
+                print(f"HALL OF FAME: {seq:03d} {url} -> {tworca} - {tytul} (specjalna={('specjalna' in (title or '').lower())})")
+            except Exception as e:
+                print(f"HALL OF FAME: blad edycji {url}: {e}")
+                continue
+        if not collected:
+            print("HALL OF FAME: nic nie zebrano - nic nie zmieniam")
+            return False
+        # Porownanie z tym co jest - jak identyczne, nie kasuj
+        try:
+            existing = {}
+            for d in db.collection("HALL OF FAME").stream():
+                data = d.to_dict() or {}
+                existing[d.id] = (str(data.get("wykonawca") or ""), str(data.get("tytul") or ""), data.get("numerNotowania"))
+        except Exception as e:
+            print(f"HALL OF FAME: blad odczytu istniejacych: {e}")
+            existing = {}
+        new_map = {}
+        for seq, url, title, tworca, tytul, yt in collected:
+            doc_id = f"{seq:03d}"
+            new_map[doc_id] = (tworca, tytul, seq)
+        if existing == new_map:
+            print(f"HALL OF FAME: bez zmian ({len(new_map)} wpisow) - nie kasuje")
+            return False
+        # ZAMIANA WSZYSTKICH DANYCH: najpierw kasuj wszystko, potem zapisz od nowa
+        print(f"HALL OF FAME: zamieniam wszystkie dane: stare={len(existing)} nowe={len(new_map)}")
+        try:
+            docs = list(db.collection("HALL OF FAME").stream())
+            batch = db.batch()
+            n = 0
+            for d in docs:
+                batch.delete(d.reference)
+                n += 1
+                if n >= 400:
+                    batch.commit()
+                    batch = db.batch()
+                    n = 0
+            if n > 0:
+                batch.commit()
+            print(f"HALL OF FAME: usunieto {len(docs)} starych dokumentow")
+        except Exception as e:
+            print(f"HALL OF FAME: blad kasowania: {e}")
+            return False
+        # Zapis od nowa, numerNotowania jako int
+        batch = db.batch()
+        n = 0
+        for seq, url, title, tworca, tytul, yt in collected:
+            doc_id = f"{seq:03d}"
+            youtube_id = _hof_youtube_id(yt)
+            youtube_url = yt
+            if youtube_url and not youtube_url.startswith("http"):
+                youtube_url = f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else ""
+            if not youtube_url and youtube_id:
+                youtube_url = f"https://www.youtube.com/watch?v={youtube_id}"
+            is_special = "specjalna" in (title or "").lower()
+            if is_special:
+                notowanie = title if title else "Edycja specjalna"
+                edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{seq}"
+            else:
+                notowanie = f"TOP 10 #{doc_id}"
+                edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{seq}"
+            ref = db.collection("HALL OF FAME").document(doc_id)
+            batch.set(ref, {
+                "edycja": edycja_str,
+                "notowanie": notowanie,
+                "numerNotowania": int(seq),
+                "source": "bot",
+                "source_url": url,
+                "tytul": tytul,
+                "wykonawca": tworca,
+                "youtubeId": youtube_id,
+                "youtubeUrl": youtube_url,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            })
+            n += 1
+            if n >= 400:
+                batch.commit()
+                batch = db.batch()
+                n = 0
+        if n > 0:
+            batch.commit()
+        print(f"HALL OF FAME: zapisano od nowa {len(collected)} wpisow")
+        return True
+    except Exception as e:
+        print(f"ERROR hall_of_fame rebuild: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+@tasks.loop(minutes=1)
 async def check_hall_of_fame_loop():
+    global _hof_last_sunday_run, _hof_initial_done
     try:
         now = datetime.now(WARSAW)
-        if now.weekday() != 0:
+        # 1) Raz po starcie - zamiana teraz, zeby nie czekac do niedzieli
+        if not _hof_initial_done:
+            _hof_initial_done = True
+            print("HALL OF FAME: start - przebudowa teraz (zamiana wszystkich danych)")
+            await _hof_rebuild_all()
             return
-        doc = db.collection("lista").document("aktualna").get()
-        if not doc.exists:
+        # 2) Potem tylko niedziela 23:30-23:59, raz dziennie
+        if now.weekday() != 6:
             return
-        data = doc.to_dict() or {}
-        tracks = data.get("tracks") or data.get("utwory") or []
-        if not tracks:
+        if not (now.hour == 23 and now.minute >= 30):
             return
-        top = None
-        for t in tracks:
-            if isinstance(t, dict) and t.get("no") == 1:
-                top = t
-                break
-        if top is None:
-            top = tracks[0]
-        if not isinstance(top, dict):
+        today = now.strftime("%Y-%m-%d")
+        if _hof_last_sunday_run == today:
             return
-        tworca = (top.get("tworca") or top.get("wykonawca") or "").strip()
-        tytul = (top.get("tytul") or top.get("title") or "").strip()
-        youtube_url = (top.get("youtube") or top.get("youtubeUrl") or top.get("link") or "").strip()
-        if not tworca or not tytul:
-            return
-        source_url = (data.get("source_url") or data.get("sourceUrl") or "").strip()
-        m = re.search(r"edycja-(\d+)", source_url)
-        if m:
-            edycja_num = int(m.group(1))
-        else:
-            snap = db.collection("HALL OF FAME").get()
-            mx = 0
-            for d in snap:
-                try:
-                    v = d.to_dict().get("numerNotowania")
-                    n = int(str(v)) if v is not None else int(d.id)
-                    mx = max(mx, n)
-                except Exception:
-                    continue
-            edycja_num = mx + 1
-            source_url = f"https://aiarenatop10.pl/lista/ai-arena-top-10-edycja-{edycja_num}"
-        doc_id = f"{edycja_num:03d}"
-        existing = db.collection("HALL OF FAME").document(doc_id).get()
-        if existing.exists:
-            return
-        youtube_id = _hof_youtube_id(youtube_url)
-        if youtube_url and not youtube_url.startswith("http"):
-            youtube_url = f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else ""
-        if not youtube_url and youtube_id:
-            youtube_url = f"https://www.youtube.com/watch?v={youtube_id}"
-        edycja_str = f"ai-arena-top-10-edycja-{edycja_num}"
-        db.collection("HALL OF FAME").document(doc_id).set({
-            "edycja": edycja_str,
-            "notowanie": f"TOP 10 #{doc_id}",
-            "numerNotowania": str(edycja_num),
-            "source": "bot",
-            "source_url": source_url,
-            "tytul": tytul,
-            "wykonawca": tworca,
-            "youtubeId": youtube_id,
-            "youtubeUrl": youtube_url,
-        })
-        print(f"HALL OF FAME: dodano {doc_id} {tworca} - {tytul}")
+        _hof_last_sunday_run = today
+        print(f"HALL OF FAME: niedziela 23:30 - sprawdzam nowa zamknieta edycje ({today})")
+        await _hof_rebuild_all()
     except Exception as e:
-        print(f"ERROR hall_of_fame: {e}")
+        print(f"ERROR hall_of_fame loop: {e}")
 
 @bot.event
 async def on_ready():
