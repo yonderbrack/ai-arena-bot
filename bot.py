@@ -612,8 +612,8 @@ async def on_member_join(member):
 # === HALL OF FAME: zamiana WSZYSTKICH danych, niedziela 23:30 ===
 # Zasada:
 # - Zrodlo: /edycje + /edycje?strona=2 + /edycje?strona=3, tylko div#listaEdycji, tylko a.edition-foto
-# - Kolejnosc na stronie = od najnowszej. Bot odwraca ja i nadaje numerNotowania = 1..N po kolei.
-#   Dzieki temu edycja specjalna dostaje wlasny calkowity numer (bez 21.5), a telefon widzi wszystkie.
+# - Numer = numer z URL (edycja-23 -> 23). Specjalna bez numeru dostaje max+1.
+#   Bez filtra naglowka 8000 - link z #listaEdycji to juz zamknieta.
 # - numerNotowania zapisywane jako LICZBA (int), nie string - tego wymaga orderBy w telefonie.
 # - Przy starcie bot raz przebudowuje wszystko (zamiana teraz). Potem tylko niedziela 23:30-23:59.
 def _hof_youtube_id(url: str) -> str:
@@ -679,10 +679,13 @@ def _hof_fetch_closed_edition_urls_sync():
     return out
 
 def _hof_is_closed_html(html: str) -> bool:
-    if not html:
-        return False
-    header = html[:8000].lower()
-    return "zamkni" in header
+    # Link jest z div#listaEdycji = z definicji zamkniety. Nie odrzucamy po naglowku.
+    # Stary check na pierwszych 8000 znakach kasowal wiekszosc edycji.
+    return True if html else False
+
+def _hof_num_from_url(url: str):
+    m = re.search(r"edycja-(\d+)", url, re.IGNORECASE)
+    return int(m.group(1)) if m else None
 
 _hof_last_sunday_run = ""
 _hof_initial_done = False
@@ -695,10 +698,10 @@ async def _hof_rebuild_all():
         if not edition_links:
             print("HALL OF FAME: brak linkow edycji - nic nie zmieniam")
             return False
-        # Najstarsza pierwsza -> numerNotowania 1..N po kolei
+        # Numer = numer z URL (edycja-23 -> 23), nie pozycja na liscie. Dzieki temu 002 zostaje 002 nawet jak jedna edycja odpadnie.
         chronological = list(reversed(edition_links))
-        collected = []  # (seq, url, title, tworca, tytul, youtube_url)
-        for seq, (url, title) in enumerate(chronological, start=1):
+        collected = []  # (numer, url, title, tworca, tytul, youtube_url)
+        for (url, title) in chronological:
             try:
                 html = await asyncio.to_thread(_fetch_sync, url)
                 if not html:
@@ -725,14 +728,36 @@ async def _hof_rebuild_all():
                 if not tworca or not tytul:
                     print(f"HALL OF FAME: puste #1 {url} - pomijam")
                     continue
-                collected.append((seq, url, title, tworca, tytul, (yt or "").strip()))
-                print(f"HALL OF FAME: {seq:03d} {url} -> {tworca} - {tytul} (specjalna={('specjalna' in (title or '').lower())})")
+                ed_num = _hof_num_from_url(url)
+                is_special_no_num = ed_num is None
+                if is_special_no_num:
+                    # Specjalna bez numeru w URL - dostanie numer po posortowaniu, na razie -1
+                    ed_num = -1
+                collected.append((ed_num, url, title, tworca, tytul, (yt or "").strip()))
+                print(f"HALL OF FAME: {ed_num:03d} {url} -> {tworca} - {tytul} (specjalna={('specjalna' in (title or '').lower())})")
             except Exception as e:
                 print(f"HALL OF FAME: blad edycji {url}: {e}")
                 continue
         if not collected:
             print("HALL OF FAME: nic nie zebrano - nic nie zmieniam")
             return False
+        # BLOKADA: jak zebrano podejrzanie malo, nie kasuj nic. Chroni przed wyczyszczeniem calej kolekcji przy bledzie pobierania.
+        if len(collected) < 10:
+            print(f"HALL OF FAME: BLOKADA - zebrano tylko {len(collected)} edycji, nie kasuje. Sprawdz logi /edycje.")
+            return False
+        # Specjalna bez numeru: nadaj jej numer = max + 1, zeby miala wlasny calkowity numer
+        if any(c[0] == -1 for c in collected):
+            mx = max([c[0] for c in collected if c[0] != -1], default=0)
+            fixed = []
+            nxt = mx + 1
+            for numer, url, title, tworca, tytul, yt in collected:
+                if numer == -1:
+                    fixed.append((nxt, url, title, tworca, tytul, yt))
+                    nxt += 1
+                else:
+                    fixed.append((numer, url, title, tworca, tytul, yt))
+            collected = fixed
+        collected = sorted(collected, key=lambda x: x[0])
         # Porownanie z tym co jest - jak identyczne, nie kasuj
         try:
             existing = {}
@@ -743,9 +768,9 @@ async def _hof_rebuild_all():
             print(f"HALL OF FAME: blad odczytu istniejacych: {e}")
             existing = {}
         new_map = {}
-        for seq, url, title, tworca, tytul, yt in collected:
-            doc_id = f"{seq:03d}"
-            new_map[doc_id] = (tworca, tytul, seq)
+        for numer, url, title, tworca, tytul, yt in collected:
+            doc_id = f"{numer:03d}"
+            new_map[doc_id] = (tworca, tytul, numer)
         if existing == new_map:
             print(f"HALL OF FAME: bez zmian ({len(new_map)} wpisow) - nie kasuje")
             return False
@@ -771,8 +796,8 @@ async def _hof_rebuild_all():
         # Zapis od nowa, numerNotowania jako int
         batch = db.batch()
         n = 0
-        for seq, url, title, tworca, tytul, yt in collected:
-            doc_id = f"{seq:03d}"
+        for numer, url, title, tworca, tytul, yt in collected:
+            doc_id = f"{numer:03d}"
             youtube_id = _hof_youtube_id(yt)
             youtube_url = yt
             if youtube_url and not youtube_url.startswith("http"):
@@ -782,15 +807,15 @@ async def _hof_rebuild_all():
             is_special = "specjalna" in (title or "").lower()
             if is_special:
                 notowanie = title if title else "Edycja specjalna"
-                edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{seq}"
+                edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{numer}"
             else:
                 notowanie = f"TOP 10 #{doc_id}"
-                edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{seq}"
+                edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{numer}"
             ref = db.collection("HALL OF FAME").document(doc_id)
             batch.set(ref, {
                 "edycja": edycja_str,
                 "notowanie": notowanie,
-                "numerNotowania": int(seq),
+                "numerNotowania": int(numer),
                 "source": "bot",
                 "source_url": url,
                 "tytul": tytul,
