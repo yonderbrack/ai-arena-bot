@@ -612,7 +612,7 @@ async def on_member_join(member):
 # === HALL OF FAME: zamiana WSZYSTKICH danych, niedziela 23:30 ===
 # Zasada:
 # - Zrodlo: /edycje + /edycje?strona=2 + /edycje?strona=3, tylko div#listaEdycji, tylko a.edition-foto
-# - Numer = numer z URL (edycja-23 -> 23). Specjalna bez numeru dostaje max+1.
+# - Numer = pozycja chronologiczna 1..N. Specjalna = bez "Edycja + numer" w tytule (Halloween, Wakacyjny Przelboj).
 #   Bez filtra naglowka 8000 - link z #listaEdycji to juz zamknieta.
 # - numerNotowania zapisywane jako LICZBA (int), nie string - tego wymaga orderBy w telefonie.
 # - Przy starcie bot raz przebudowuje wszystko (zamiana teraz). Potem tylko niedziela 23:30-23:59.
@@ -661,14 +661,12 @@ def _hof_fetch_closed_edition_urls_sync():
                 if clean in seen:
                     continue
                 seen.add(clean)
-                # Tytul z article/h3 obok linku - do wykrycia edycji specjalnej
+                # Tytul = caly tekst article (h3 + tagi + meta) - "specjalna" bywa w tagach, nie w h3
                 title = ""
                 try:
                     art = a.find_parent("article")
                     if art is not None:
-                        h3 = art.find("h3")
-                        if h3 is not None:
-                            title = h3.get_text(" ", strip=True)
+                        title = art.get_text(" ", strip=True)[:400]
                 except Exception:
                     title = ""
                 out.append((clean, title))
@@ -682,6 +680,21 @@ def _hof_is_closed_html(html: str) -> bool:
     # Link jest z div#listaEdycji = z definicji zamkniety. Nie odrzucamy po naglowku.
     # Stary check na pierwszych 8000 znakach kasowal wiekszosc edycji.
     return True if html else False
+
+def _hof_is_special_title(title: str, url: str) -> bool:
+    # Specjalna = bez "Edycja + numer" w tytule, albo Halloween / Wakacyjny / specjalna
+    txt = (title or "").lower()
+    u = (url or "").lower()
+    if "specjalna" in txt or "specjalna" in u:
+        return True
+    if "halloween" in txt or "halloween" in u:
+        return True
+    if "wakacyjny" in txt or "wakacyjny" in u or "przebój" in txt or "przebój" in u:
+        return True
+    # Regularna ma "Edycja 22", "Edycja 21", "Edycja 11" itd. Brak tego = specjalna
+    if not re.search(r"edycja\s*\d+", txt, re.IGNORECASE):
+        return True
+    return False
 
 def _hof_num_from_url(url: str):
     m = re.search(r"edycja-(\d+)", url, re.IGNORECASE)
@@ -698,9 +711,10 @@ async def _hof_rebuild_all():
         if not edition_links:
             print("HALL OF FAME: brak linkow edycji - nic nie zmieniam")
             return False
-        # Numer = numer z URL (edycja-23 -> 23), nie pozycja na liscie. Dzieki temu 002 zostaje 002 nawet jak jedna edycja odpadnie.
+        # Kolejnosc chronologiczna = najstarsza pierwsza. Numer = pozycja 1..N po kolei.
+        # Halloween miedzy 21 a 22, Wakacyjny miedzy 10 a 11 - nie na koniec jako 24/25.
         chronological = list(reversed(edition_links))
-        collected = []  # (numer, url, title, tworca, tytul, youtube_url)
+        collected = []  # (numer, url, title, tworca, tytul, youtube_url, is_special)
         for (url, title) in chronological:
             try:
                 html = await asyncio.to_thread(_fetch_sync, url)
@@ -728,13 +742,10 @@ async def _hof_rebuild_all():
                 if not tworca or not tytul:
                     print(f"HALL OF FAME: puste #1 {url} - pomijam")
                     continue
-                ed_num = _hof_num_from_url(url)
-                is_special_no_num = ed_num is None
-                if is_special_no_num:
-                    # Specjalna bez numeru w URL - dostanie numer po posortowaniu, na razie -1
-                    ed_num = -1
-                collected.append((ed_num, url, title, tworca, tytul, (yt or "").strip()))
-                print(f"HALL OF FAME: {ed_num:03d} {url} -> {tworca} - {tytul} (specjalna={('specjalna' in (title or '').lower())})")
+                is_special = _hof_is_special_title(title, url)
+                # Tymczasowo numer 0, prawdziwy numer = pozycja chronologiczna, nadamy po zebraniu
+                collected.append((0, url, title, tworca, tytul, (yt or "").strip(), is_special))
+                print(f"HALL OF FAME: {url} -> {tworca} - {tytul} (specjalna={is_special} tytul={title[:80]})")
             except Exception as e:
                 print(f"HALL OF FAME: blad edycji {url}: {e}")
                 continue
@@ -745,19 +756,11 @@ async def _hof_rebuild_all():
         if len(collected) < 10:
             print(f"HALL OF FAME: BLOKADA - zebrano tylko {len(collected)} edycji, nie kasuje. Sprawdz logi /edycje.")
             return False
-        # Specjalna bez numeru: nadaj jej numer = max + 1, zeby miala wlasny calkowity numer
-        if any(c[0] == -1 for c in collected):
-            mx = max([c[0] for c in collected if c[0] != -1], default=0)
-            fixed = []
-            nxt = mx + 1
-            for numer, url, title, tworca, tytul, yt in collected:
-                if numer == -1:
-                    fixed.append((nxt, url, title, tworca, tytul, yt))
-                    nxt += 1
-                else:
-                    fixed.append((numer, url, title, tworca, tytul, yt))
-            collected = fixed
-        collected = sorted(collected, key=lambda x: x[0])
+        # Numer = pozycja chronologiczna 1..N. Halloween i Wakacyjny dostaja numer w miejscu, gdzie stoja na stronie.
+        fixed = []
+        for idx, (numer, url, title, tworca, tytul, yt, is_special) in enumerate(collected, start=1):
+            fixed.append((idx, url, title, tworca, tytul, yt, is_special))
+        collected = fixed
         # Porownanie z tym co jest - jak identyczne, nie kasuj
         try:
             existing = {}
@@ -768,7 +771,7 @@ async def _hof_rebuild_all():
             print(f"HALL OF FAME: blad odczytu istniejacych: {e}")
             existing = {}
         new_map = {}
-        for numer, url, title, tworca, tytul, yt in collected:
+        for numer, url, title, tworca, tytul, yt, is_special in collected:
             doc_id = f"{numer:03d}"
             new_map[doc_id] = (tworca, tytul, numer)
         if existing == new_map:
@@ -796,7 +799,7 @@ async def _hof_rebuild_all():
         # Zapis od nowa, numerNotowania jako int
         batch = db.batch()
         n = 0
-        for numer, url, title, tworca, tytul, yt in collected:
+        for numer, url, title, tworca, tytul, yt, is_special in collected:
             doc_id = f"{numer:03d}"
             youtube_id = _hof_youtube_id(yt)
             youtube_url = yt
@@ -804,9 +807,13 @@ async def _hof_rebuild_all():
                 youtube_url = f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else ""
             if not youtube_url and youtube_id:
                 youtube_url = f"https://www.youtube.com/watch?v={youtube_id}"
-            is_special = "specjalna" in (title or "").lower()
+            # Specjalna = Halloween / Wakacyjny Przelboj - wyswietl nazwe, nie TOP 10 #...
+            # is_special juz policzone z tytulu artykulu w _hof_is_special_title
             if is_special:
-                notowanie = title if title else "Edycja specjalna"
+                short_title = (title or "").strip()
+                if len(short_title) > 80:
+                    short_title = short_title[:80].strip()
+                notowanie = short_title if short_title else "Edycja specjalna"
                 edycja_str = url.split("/lista/")[-1] if "/lista/" in url else f"edycja-{numer}"
             else:
                 notowanie = f"TOP 10 #{doc_id}"
