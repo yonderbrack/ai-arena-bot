@@ -345,6 +345,7 @@ async def check_lista():
     try:
         candidate_urls_top20 = []
         candidate_urls_top10 = []
+        edycje_html = ""
         try:
             edycje_html = await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
             candidate_urls_top20 = _parse_edycje_for_top20_urls(edycje_html)
@@ -352,11 +353,27 @@ async def check_lista():
             print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
-        # FIX: TOP20 brute 25..1 NAJPIERW, potem TOP10
+        # NAJNOWSZA Z /edycje - kolejnosc jak na stronie, najnowsza pierwsza
+        # Brute 25..1 tylko jako fallback, jak /edycje puste
         candidate_urls = []
-        for n in range(25, 0, -1):
-            candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
-        candidate_urls.extend(candidate_urls_top10)
+        try:
+            if edycje_html:
+                soup_ed = BeautifulSoup(edycje_html, "html.parser")
+                for a in soup_ed.find_all("a", href=True):
+                    href = a["href"]
+                    if "/lista/" not in href:
+                        continue
+                    if href.startswith("/"):
+                        href = TOP20_BASE_URL + href
+                    clean = href.split("?")[0].split("#")[0].rstrip("/")
+                    if clean not in candidate_urls:
+                        candidate_urls.append(clean)
+        except Exception as e:
+            print(f"TOP20 WWW: blad parsowania kolejnosci /edycje: {e}")
+        if not candidate_urls:
+            for n in range(25, 0, -1):
+                candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
+            candidate_urls.extend(candidate_urls_top10)
         candidate_urls = list(dict.fromkeys(candidate_urls))
         final_tracks = []
         used_url = None
