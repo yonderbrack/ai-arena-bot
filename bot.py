@@ -383,11 +383,12 @@ async def check_lista():
                 html = await asyncio.to_thread(_fetch_sync, url)
                 if not html:
                     continue
-                # TYLKO ZAMKNIETA - pomijaj otwarta / w trakcie glosowania
-                # Edycja 24 jest juz utworzona, ale nie zamknieta, wiec bot bral 24 zamiast 23
-                low = html.lower()
-                if "zamkni" not in low and "zakończ" not in low and "zamknięta" not in low:
-                    print(f"TOP20 WWW: pomijam {url} - nie zamknieta")
+                # TYLKO ZAMKNIETA - tylko naglowek strony, nie cala strona
+                # 24 ma slowo 'zamkni' w stopce / liscie innych edycji, wiec stary check na calym HTML przepuszczal 24
+                # Naglowek 23 ma badge ZAMKNIETA i 'Ranking zamkniety', 24 otwarta ma OTWARTA / GLOSOWANIE
+                header = html[:8000].lower()
+                if "zamkni" not in header and "ranking zamknięty" not in header:
+                    print(f"TOP20 WWW: pomijam {url} - nie zamknieta (naglowek bez ZAMKNIETA)")
                     continue
                 tracks = _extract_tracks_from_html(html)
                 print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
