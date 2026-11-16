@@ -383,6 +383,12 @@ async def check_lista():
                 html = await asyncio.to_thread(_fetch_sync, url)
                 if not html:
                     continue
+                # TYLKO ZAMKNIETA - pomijaj otwarta / w trakcie glosowania
+                # Edycja 24 jest juz utworzona, ale nie zamknieta, wiec bot bral 24 zamiast 23
+                low = html.lower()
+                if "zamkni" not in low and "zakończ" not in low and "zamknięta" not in low:
+                    print(f"TOP20 WWW: pomijam {url} - nie zamknieta")
+                    continue
                 tracks = _extract_tracks_from_html(html)
                 print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
                 if len(tracks) >= 1:
