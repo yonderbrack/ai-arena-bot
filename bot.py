@@ -216,8 +216,8 @@ def _extract_tracks_from_html(html: str):
                 if m:
                     youtube_url = m.group(0).rstrip("\"'")
             fav_count = None
-            heart_terms = ("fav", "heart", "serc", "like", "love", "glos", "vote", "punkty", "pkt", "score")
-            count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count", "data-votes", "data-glosy", "data-punkty", "data-score")
+            heart_terms = ("fav", "heart", "serc", "like", "love")
+            count_attrs = ("data-fav-count", "data-hearts", "data-serca", "data-likes", "data-count")
             for el in [art] + art.find_all(True):
                 if fav_count is not None:
                     break
@@ -249,7 +249,7 @@ def _extract_tracks_from_html(html: str):
                         fav_count = int(mm.group())
                         break
             if fav_count is None:
-                fav_el = art.select_one("span.fav-count, .fav-count, span.votes, .votes, span.punkty, .punkty")
+                fav_el = art.select_one("span.fav-count, .fav-count")
                 if fav_el is not None:
                     fav_text = fav_el.get_text(" ", strip=True)
                     mm = re.search(r"\d+", fav_text)
@@ -257,7 +257,7 @@ def _extract_tracks_from_html(html: str):
                         fav_count = int(mm.group())
             if fav_count is None:
                 article_text = art.get_text(" ", strip=True)
-                mm = re.search(r"[♥❤♡]\s*(\d+)", article_text)
+                mm = re.search(r"[♥️❤️♡]\s*(\d+)", article_text)
                 if mm:
                     fav_count = int(mm.group(1))
             if fav_count is None:
@@ -265,11 +265,6 @@ def _extract_tracks_from_html(html: str):
                 mm = re.search(r'class=["\'][^"\']*\bfav-count\b[^"\']*["\'][^>]*>\s*(\d+)\s*<', raw_article, re.IGNORECASE)
                 if mm:
                     fav_count = int(mm.group(1))
-            if fav_count is None:
-                # wyniki po glosowaniu maja czasem format: 123 pkt / 123 glosy
-                m_pkt = re.search(r"(\d+)\s*(?:pkt|punkt|głos|glos|vote)", art.get_text(" ", strip=True), re.IGNORECASE)
-                if m_pkt:
-                    fav_count = int(m_pkt.group(1))
             if fav_count is None:
                 fav_count = 0
             tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip(), fav_count, track_id.strip()))
@@ -289,20 +284,17 @@ def _extract_tracks_from_html(html: str):
                     no = int(m_no.group(1)) if m_no else i + 1
                     m_fav = re.search(r'class="[^"]*fav-count[^"]*"[^>]*>(\d+)<', inner)
                     fav_count = int(m_fav.group(1)) if m_fav else 0
-                    if fav_count == 0:
-                        m_pkt2 = re.search(r"(\d+)\s*(?:pkt|punkt|głos|glos|vote)", inner, re.IGNORECASE)
-                        if m_pkt2:
-                            fav_count = int(m_pkt2.group(1))
                     track_id = art_id[2:] if art_id.startswith("u-") else art_id
                     tracks.append((no, tytul.strip(), tworca.strip(), youtube_url.strip(), fav_count, track_id.strip()))
         except Exception as e:
             print(f"EXTRACT REGEX error: {e}")
-    # WAZNE: NIE sortuj po no. DOM po zamknieciu jest juz poukladany po glosowaniu 1..20.
-    # Sortowanie po no cofalo kolejnosc do kolejnosci zgloszen i psulo Wyniki i punkty.
-    # Zostawiamy kolejnosc DOM, ranking i tak liczymy po sercach w check_lista / sync_wyniki_live.
+    try:
+        tracks.sort(key=lambda x: x[0])
+    except:
+        pass
     return tracks
 
-# === WYNIKI LIVE: top 5 po GLOSACH, nie po no ===
+# === WYNIKI LIVE: kopia pierwszych 5 z listy w kolejnosci listy (1-5) ===
 _last_edycja_for_wyniki = None
 
 async def sync_wyniki_live():
@@ -317,17 +309,10 @@ async def sync_wyniki_live():
             return
         edycja = data.get("edycja", "")
         source_url = data.get("source_url", "")
-        # Ranking = po sercach (glosach). Jak serca sa 0, bierz kolejnosc z lista/aktualna, bo ona juz jest po glosowaniu.
-        ma_serca = any(int(tr.get("fav_count", 0) or 0) > 0 for tr in tracks)
-        if ma_serca:
-            top5 = sorted(tracks, key=lambda x: int(x.get("fav_count", 0) or 0), reverse=True)[:5]
-        else:
-            # tracks w lista/aktualna sa juz w kolejnosci rankingowej po poprawce w check_lista
-            top5 = sorted(tracks, key=lambda x: int(x.get("no", 999) or 999))[:5]
+        top5 = sorted(tracks, key=lambda x: x.get("no", 999))[:5]
         if _last_edycja_for_wyniki != edycja:
             print(f"WYNIKI: nowa edycja {edycja} - przepisuje Wyniki live")
             _last_edycja_for_wyniki = edycja
-        print(f"WYNIKI: top5 edycja={edycja} ma_serca={ma_serca} -> {[(t.get('tworca'), t.get('tytul'), t.get('fav_count')) for t in top5]}")
         for i, tr in enumerate(top5, start=1):
             wynik = f"{i}. {tr.get('tworca','')} - {tr.get('tytul','')}"
             full = f"{i}. {tr.get('tworca','')} - {tr.get('tytul','')} {tr.get('youtube','')}"
@@ -340,7 +325,6 @@ async def sync_wyniki_live():
                 "youtube": tr.get("youtube", ""),
                 "youtubeUrl": tr.get("youtube", ""),
                 "serca": int(tr.get("fav_count", 0)),
-                "miejsce": i,
                 "track_id": tr.get("track_id", ""),
                 "source": "live_top5_z_listy",
                 "source_url": source_url,
@@ -348,12 +332,6 @@ async def sync_wyniki_live():
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "updated_day": datetime.now(WARSAW).strftime("%d.%m.%Y %H:%M:%S"),
             }, merge=True)
-        # wyczysc stare Wyniki 6-10 gdyby zostaly z poprzedniej edycji
-        for i in range(6, 11):
-            try:
-                db.collection("Wyniki").document(str(i)).delete()
-            except:
-                pass
     except Exception as e:
         print(f"WYNIKI blad: {e}")
 
@@ -365,23 +343,37 @@ async def check_wyniki_loop():
 async def check_lista():
     now = datetime.now(WARSAW)
     try:
+        candidate_urls_top20 = []
+        candidate_urls_top10 = []
         edycje_html = ""
         try:
             edycje_html = await asyncio.to_thread(_fetch_sync, TOP20_EDYCJE_URL)
+            candidate_urls_top20 = _parse_edycje_for_top20_urls(edycje_html)
+            candidate_urls_top10 = _parse_edycje_for_top10_urls(edycje_html)
+            print(f"TOP20 WWW: znaleziono {len(candidate_urls_top20)} linkow TOP20 + {len(candidate_urls_top10)} linkow TOP10 specjalnych")
         except Exception as e:
             print(f"TOP20 WWW: blad pobierania /edycje: {e}")
-            return
-        if not edycje_html:
-            print("TOP20 WWW: puste /edycje, nic nie robie")
-            return
-        # FIX: bierz TYLKO TOP20 posortowane po numerze edycji, najnowsza pierwsza.
-        # Stary kod bral pierwszy link z calego DOM (header, hero, TOP10) i stawal na nim.
-        # Dlatego w niedziele bral stara liste, a nie zamknieta poukladana po glosowaniu 1..20.
-        candidate_urls = _parse_edycje_for_top20_urls(edycje_html)
-        print(f"TOP20 WWW: znaleziono {len(candidate_urls)} linkow TOP20, najnowszy: {candidate_urls[0] if candidate_urls else 'BRAK'}")
+        # NAJNOWSZA Z /edycje - kolejnosc jak na stronie, najnowsza pierwsza
+        # Brute 25..1 tylko jako fallback, jak /edycje puste
+        candidate_urls = []
+        try:
+            if edycje_html:
+                soup_ed = BeautifulSoup(edycje_html, "html.parser")
+                for a in soup_ed.find_all("a", href=True):
+                    href = a["href"]
+                    if "/lista/" not in href:
+                        continue
+                    if href.startswith("/"):
+                        href = TOP20_BASE_URL + href
+                    clean = href.split("?")[0].split("#")[0].rstrip("/")
+                    if clean not in candidate_urls:
+                        candidate_urls.append(clean)
+        except Exception as e:
+            print(f"TOP20 WWW: blad parsowania kolejnosci /edycje: {e}")
         if not candidate_urls:
-            for n in range(30, 0, -1):
+            for n in range(25, 0, -1):
                 candidate_urls.append(f"{TOP20_BASE_URL}/lista/ai-arena-top-20-edycja-{n}")
+            candidate_urls.extend(candidate_urls_top10)
         candidate_urls = list(dict.fromkeys(candidate_urls))
         final_tracks = []
         used_url = None
@@ -392,32 +384,16 @@ async def check_lista():
                 if not html:
                     continue
                 tracks = _extract_tracks_from_html(html)
-                print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow, serca: {[t[4] for t in tracks[:5]]}")
-                if len(tracks) < 15:
-                    print(f"TOP20 WWW: pomijam niepelna liste {url} ({len(tracks)})")
-                    continue
-                final_tracks = tracks
-                used_url = url
-                break
+                print(f"TOP20 WWW: {url} -> znaleziono {len(tracks)} utworow")
+                if len(tracks) >= 1:
+                    final_tracks = tracks
+                    used_url = url
+                    break
             except Exception as e:
                 print(f"TOP20 WWW: blad {url}: {e}")
                 continue
         if not final_tracks:
-            print("TOP20 WWW: brak PELNEJ listy, NIE nadpisuje lista/aktualna, zostawiam stara")
             return
-        # FIX: ranking = po sercach. Strona po zamknieciu jest poukladana po glosowaniu,
-        # ale zeby nie polegac na DOM, sortujemy po fav_count i nadajemy no = miejsce w rankingu.
-        # Wtedy lista/aktualna.tracks[].no = miejsce 1..20, a Wyniki i punkty licza sie dobrze.
-        ma_serca = any(int(t[4] or 0) > 0 for t in final_tracks)
-        if ma_serca:
-            ranked = sorted(final_tracks, key=lambda x: int(x[4] or 0), reverse=True)
-        else:
-            ranked = list(final_tracks)
-        # nadaj no od nowa = miejsce w rankingu
-        ranked_fixed = []
-        for idx, (no_old, tytul, tworca, yt, fav, tid) in enumerate(ranked, start=1):
-            ranked_fixed.append((idx, tytul, tworca, yt, int(fav or 0), tid))
-        final_tracks = ranked_fixed
         final_list = []
         detailed_tracks = []
         serca = []
@@ -455,7 +431,7 @@ async def check_lista():
             "edycja": used_url.split("/")[-1] if used_url else "unknown",
             "typ": "TOP10" if "top-10" in (used_url or "").lower() else "TOP20",
         })
-        print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url} - top1: {detailed_tracks[0] if detailed_tracks else None}")
+        print(f"TOP20 WWW: ZAPISANO {len(final_list)} utworow do lista/aktualna z {used_url}")
         await sync_wyniki_live()
     except Exception as e:
         print(f"ERROR lista WWW: {e}")
@@ -633,7 +609,13 @@ async def on_member_join(member):
     except Exception as e:
         print(f"ERROR on_member_join: {e}")
 
-# === HALL OF FAME - BEZ ZMIAN, dzialalo dobrze ===
+# === HALL OF FAME: zamiana WSZYSTKICH danych, niedziela 23:30 ===
+# Zasada:
+# - Zrodlo: /edycje + /edycje?strona=2 + /edycje?strona=3, tylko div#listaEdycji, tylko a.edition-foto
+# - Numer = pozycja chronologiczna 1..N. Specjalna = bez "Edycja + numer" w tytule (Halloween, Wakacyjny Przelboj).
+#   Bez filtra naglowka 8000 - link z #listaEdycji to juz zamknieta.
+# - numerNotowania zapisywane jako LICZBA (int), nie string - tego wymaga orderBy w telefonie.
+# - Przy starcie bot raz przebudowuje wszystko (zamiana teraz). Potem tylko niedziela 23:30-23:59.
 def _hof_youtube_id(url: str) -> str:
     if not url:
         return ""
@@ -641,6 +623,7 @@ def _hof_youtube_id(url: str) -> str:
     return m.group(1) if m else ""
 
 def _hof_fetch_closed_edition_urls_sync():
+    # Zwraca liste (url, tytul) w kolejnosci ze strony: najnowsza pierwsza.
     out = []
     seen = set()
     page_urls = [
@@ -662,6 +645,7 @@ def _hof_fetch_closed_edition_urls_sync():
             container = lista if lista is not None else soup
             links = container.find_all("a", class_=lambda c: c and "edition-foto" in c, href=True)
             if not links:
+                # Fallback: wszystkie linki /lista/ w sekcji Zamkniete
                 links = container.find_all("a", href=True)
             for a in links:
                 href = a.get("href") or ""
@@ -677,6 +661,7 @@ def _hof_fetch_closed_edition_urls_sync():
                 if clean in seen:
                     continue
                 seen.add(clean)
+                # Tytul = caly tekst article (h3 + tagi + meta) - "specjalna" bywa w tagach, nie w h3
                 title = ""
                 try:
                     art = a.find_parent("article")
@@ -692,9 +677,12 @@ def _hof_fetch_closed_edition_urls_sync():
     return out
 
 def _hof_is_closed_html(html: str) -> bool:
+    # Link jest z div#listaEdycji = z definicji zamkniety. Nie odrzucamy po naglowku.
+    # Stary check na pierwszych 8000 znakach kasowal wiekszosc edycji.
     return True if html else False
 
 def _hof_is_special_title(title: str, url: str) -> bool:
+    # Specjalna = bez "Edycja + numer" w tytule, albo Halloween / Wakacyjny / specjalna
     txt = (title or "").lower()
     u = (url or "").lower()
     if "specjalna" in txt or "specjalna" in u:
@@ -703,6 +691,7 @@ def _hof_is_special_title(title: str, url: str) -> bool:
         return True
     if "wakacyjny" in txt or "wakacyjny" in u or "przebój" in txt or "przebój" in u:
         return True
+    # Regularna ma "Edycja 22", "Edycja 21", "Edycja 11" itd. Brak tego = specjalna
     if not re.search(r"edycja\s*\d+", txt, re.IGNORECASE):
         return True
     return False
@@ -715,13 +704,17 @@ _hof_last_sunday_run = ""
 _hof_initial_done = False
 
 async def _hof_rebuild_all():
+    # Pobiera wszystkie zamkniete edycje, bierze #1 z kazdej, kasuje cala kolekcje i zapisuje od nowa.
+    # Zwraca True gdy cos zmieniono, False gdy bez zmian.
     try:
         edition_links = await asyncio.to_thread(_hof_fetch_closed_edition_urls_sync)
         if not edition_links:
             print("HALL OF FAME: brak linkow edycji - nic nie zmieniam")
             return False
+        # Kolejnosc chronologiczna = najstarsza pierwsza. Numer = pozycja 1..N po kolei.
+        # Halloween miedzy 21 a 22, Wakacyjny miedzy 10 a 11 - nie na koniec jako 24/25.
         chronological = list(reversed(edition_links))
-        collected = []
+        collected = []  # (numer, url, title, tworca, tytul, youtube_url, is_special)
         for (url, title) in chronological:
             try:
                 html = await asyncio.to_thread(_fetch_sync, url)
@@ -737,6 +730,7 @@ async def _hof_rebuild_all():
                     continue
                 top = None
                 for t in tracks:
+                    # _extract zwraca tuple (no, tytul, tworca, yt, fav, tid)
                     if t[0] == 1:
                         top = t
                         break
@@ -749,6 +743,7 @@ async def _hof_rebuild_all():
                     print(f"HALL OF FAME: puste #1 {url} - pomijam")
                     continue
                 is_special = _hof_is_special_title(title, url)
+                # Tymczasowo numer 0, prawdziwy numer = pozycja chronologiczna, nadamy po zebraniu
                 collected.append((0, url, title, tworca, tytul, (yt or "").strip(), is_special))
                 print(f"HALL OF FAME: {url} -> {tworca} - {tytul} (specjalna={is_special} tytul={title[:80]})")
             except Exception as e:
@@ -757,13 +752,16 @@ async def _hof_rebuild_all():
         if not collected:
             print("HALL OF FAME: nic nie zebrano - nic nie zmieniam")
             return False
+        # BLOKADA: jak zebrano podejrzanie malo, nie kasuj nic. Chroni przed wyczyszczeniem calej kolekcji przy bledzie pobierania.
         if len(collected) < 10:
-            print(f"HALL OF FAME: BLOKADA - zebrano tylko {len(collected)} edycji, nie kasuje.")
+            print(f"HALL OF FAME: BLOKADA - zebrano tylko {len(collected)} edycji, nie kasuje. Sprawdz logi /edycje.")
             return False
+        # Numer = pozycja chronologiczna 1..N. Halloween i Wakacyjny dostaja numer w miejscu, gdzie stoja na stronie.
         fixed = []
         for idx, (numer, url, title, tworca, tytul, yt, is_special) in enumerate(collected, start=1):
             fixed.append((idx, url, title, tworca, tytul, yt, is_special))
         collected = fixed
+        # Porownanie z tym co jest - jak identyczne, nie kasuj
         try:
             existing = {}
             for d in db.collection("HALL OF FAME").stream():
@@ -779,6 +777,7 @@ async def _hof_rebuild_all():
         if existing == new_map:
             print(f"HALL OF FAME: bez zmian ({len(new_map)} wpisow) - nie kasuje")
             return False
+        # ZAMIANA WSZYSTKICH DANYCH: najpierw kasuj wszystko, potem zapisz od nowa
         print(f"HALL OF FAME: zamieniam wszystkie dane: stare={len(existing)} nowe={len(new_map)}")
         try:
             docs = list(db.collection("HALL OF FAME").stream())
@@ -797,6 +796,7 @@ async def _hof_rebuild_all():
         except Exception as e:
             print(f"HALL OF FAME: blad kasowania: {e}")
             return False
+        # Zapis od nowa, numerNotowania jako int
         batch = db.batch()
         n = 0
         for numer, url, title, tworca, tytul, yt, is_special in collected:
@@ -807,6 +807,8 @@ async def _hof_rebuild_all():
                 youtube_url = f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else ""
             if not youtube_url and youtube_id:
                 youtube_url = f"https://www.youtube.com/watch?v={youtube_id}"
+            # Specjalna = Halloween / Wakacyjny Przelboj - wyswietl nazwe, nie TOP 10 #...
+            # is_special juz policzone z tytulu artykulu w _hof_is_special_title
             if is_special:
                 short_title = (title or "").strip()
                 if len(short_title) > 80:
@@ -849,11 +851,13 @@ async def check_hall_of_fame_loop():
     global _hof_last_sunday_run, _hof_initial_done
     try:
         now = datetime.now(WARSAW)
+        # 1) Raz po starcie - zamiana teraz, zeby nie czekac do niedzieli
         if not _hof_initial_done:
             _hof_initial_done = True
             print("HALL OF FAME: start - przebudowa teraz (zamiana wszystkich danych)")
             await _hof_rebuild_all()
             return
+        # 2) Potem tylko niedziela 23:30-23:59, raz dziennie
         if now.weekday() != 6:
             return
         if not (now.hour == 23 and now.minute >= 30):
@@ -866,23 +870,6 @@ async def check_hall_of_fame_loop():
         await _hof_rebuild_all()
     except Exception as e:
         print(f"ERROR hall_of_fame loop: {e}")
-
-# === KOMENDA NAPRAWCZA - wymusza przeliczenie Wyniki / lista ===
-@bot.command(name="przelicz_wyniki")
-@commands.has_permissions(administrator=True)
-async def przelicz_wyniki_cmd(ctx):
-    await ctx.send("Przeliczam wyniki z najnowszej TOP20...")
-    try:
-        await check_lista()
-        await sync_wyniki_live()
-        await ctx.send("Gotowe. Sprawdz Wyniki 1-5 w apce. Jak dalej stare, wklej logi z bota.")
-    except Exception as e:
-        await ctx.send(f"Blad przeliczania: {e}")
-
-@bot.command(name="napraw_wyniki")
-@commands.has_permissions(administrator=True)
-async def napraw_wyniki_cmd(ctx):
-    await przelicz_wyniki_cmd(ctx)
 
 @bot.event
 async def on_ready():
@@ -920,4 +907,5 @@ except Exception as e:
     traceback.print_exc()
     while True:
         time.sleep(60)
+
 
